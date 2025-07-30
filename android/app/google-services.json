@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "350474803175",
+    "project_id": "goindia-44ea7",
+    "storage_bucket": "goindia-44ea7.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:350474803175:android:a68c2651c9d3e240c08f42",
+        "android_client_info": {
+          "package_name": "com.example.drivergo"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyALNJltc3Leg3TNNXDPTdDuygoYdXvcGQs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:350474803175:android:c8248a4136d62d15c08f42",
+        "android_client_info": {
+          "package_name": "com.startech.goindia"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyALNJltc3Leg3TNNXDPTdDuygoYdXvcGQs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
