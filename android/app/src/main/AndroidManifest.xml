@@ -1,21 +1,26 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
-    package="com.example.drivergo"> <!-- ✅ Set correct package name here -->
+    package="com.example.drivergo">
 
     <!-- ✅ Permissions -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
     <application
         android:label="drivergoo"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+
+        <!-- ✅ Google Maps API Key -->
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="AIzaSyCqfjktNhxjKfM-JmpSwBk9KtgY429QWY8" />
 
         <!-- ✅ Main Activity -->
         <activity
@@ -40,7 +45,7 @@
             </intent-filter>
         </activity>
 
-        <!-- ✅ Firebase Messaging Service (with manifest conflict fix) -->
+        <!-- ✅ Firebase Messaging Service -->
         <service
             android:name="com.google.firebase.messaging.FirebaseMessagingService"
             android:exported="true"
@@ -68,5 +73,4 @@
             <data android:mimeType="text/plain" />
         </intent>
     </queries>
-
 </manifest>

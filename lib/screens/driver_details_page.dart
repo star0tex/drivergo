@@ -7,7 +7,7 @@ import 'package:permission_handler/permission_handler.dart';
 
 import 'driver_dashboard_page.dart';
 
-const String backendUrl = "http://192.168.43.236:5002";
+const String backendUrl = "http://192.168.210.12:5002";
 
 class DriverDetailsPage extends StatefulWidget {
   final String vehicleType;

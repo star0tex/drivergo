@@ -4,11 +4,11 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:firebase_core/firebase_core.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:socket_io_client/socket_io_client.dart' as io;
 
 class DriverDashboardPage extends StatefulWidget {
   final String driverId;
@@ -24,12 +24,12 @@ class DriverDashboardPage extends StatefulWidget {
 }
 
 class _DriverDashboardPageState extends State<DriverDashboardPage> {
-  final String apiBase = 'http://192.168.43.236:5002';
+  final String apiBase = 'http://192.168.210.12:5002';
 
   bool isOnDuty = false;
-  bool hasNewRide = false;
-  String? ridePickup;
-  String? rideDrop;
+  List<Map<String, dynamic>> rideRequests = []; // Queue of ride requests
+  Map<String, dynamic>? currentRide; // Currently displayed request
+
   GoogleMapController? _googleMapController;
   late String driverId;
 
@@ -37,42 +37,78 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
   LatLng? _currentPosition;
   LatLng? _customerPickup;
   Timer? _locationUpdateTimer;
-
+  late io.Socket socket;
   final Set<Marker> _markers = {};
   final Set<Polyline> _polylines = {};
   final AudioPlayer _audioPlayer = AudioPlayer();
-
+  io.Socket? _socket;
   @override
   void initState() {
     super.initState();
-    _initializeFirebase();
+    driverId = widget.driverId;
+    _connectSocket();
     _requestLocationPermission();
     _getCurrentLocation();
-    driverId = widget.driverId;
+
+    // By default, driver is offline initially
+    _registerDriver(false);
   }
 
-  Future<void> _initializeFirebase() async {
-    await Firebase.initializeApp();
-    _initFirebaseMessaging();
+  void _registerDriver(bool isOnline) async {
+    final pos = await Geolocator.getCurrentPosition(
+      desiredAccuracy: LocationAccuracy.high,
+    );
+    _socket?.emit('registerDriver', {
+      'driverId': driverId,
+      'lat': pos.latitude,
+      'lng': pos.longitude,
+      'isOnline': isOnline,
+    });
   }
 
-  Future<void> _initFirebaseMessaging() async {
-    FirebaseMessaging messaging = FirebaseMessaging.instance;
+  void _connectSocket() async {
+    _socket = io.io(apiBase, <String, dynamic>{
+      'transports': ['websocket'],
+      'autoConnect': true,
+    });
 
-    await messaging.requestPermission(alert: true, badge: true, sound: true);
-    await messaging.subscribeToTopic("drivers");
-    print("📢 Subscribed to 'drivers' topic");
+    _socket!.onConnect((_) async {
+      print("✅ Connected to socket server");
 
-    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-      final pickup = message.data['pickup'] ?? 'Unknown Pickup';
-      final drop = message.data['drop'] ?? 'Unknown Drop';
-
-      setState(() {
-        ridePickup = pickup;
-        rideDrop = drop;
-        hasNewRide = true;
+      // Get driver location and register driver
+      final pos = await Geolocator.getCurrentPosition();
+      _socket!.emit('registerDriver', {
+        'driverId': driverId,
+        'lat': pos.latitude,
+        'lng': pos.longitude,
       });
-      _playNotificationSound(); // 🔔 Added
+      print(
+        "📡 Driver registered with location: ${pos.latitude}, ${pos.longitude}",
+      );
+    });
+
+    // FIX: Listen to correct event
+    _socket?.on('newRideRequest', (data) {
+      print("📥 New ride request: $data");
+
+      if (!isOnDuty) return;
+
+      final request = Map<String, dynamic>.from(data);
+
+      // ✅ Only accept if vehicleType matches
+      if (request['vehicleType'] == widget.vehicleType) {
+        setState(() {
+          rideRequests.add(request);
+          currentRide = rideRequests.isNotEmpty ? rideRequests.first : null;
+        });
+        _playNotificationSound();
+      } else {
+        print("🚫 Ignored ride due to vehicle mismatch");
+      }
+    });
+
+    _socket!.onDisconnect((_) {
+      print("❌ Disconnected from socket server");
     });
   }
 
@@ -94,6 +130,31 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
           content: Text('Location permission is required to use map.'),
         ),
       );
+    }
+  }
+
+  Future<Map<String, dynamic>?> verifyDriverWithBackend(
+    String vehicleType,
+  ) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return null;
+
+    final idToken = await user.getIdToken(); // Firebase ID token
+
+    final response = await http.post(
+      Uri.parse('http://192.168.210.12:5002/api/driver/login'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'firebaseIdToken': idToken,
+        'vehicleType': vehicleType,
+      }),
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body); // { driverId, vehicleType }
+    } else {
+      print("❌ Driver login failed: ${response.body}");
+      return null;
     }
   }
 
@@ -133,19 +194,27 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     });
   }
 
-  void acceptRide() {
+  void acceptRide() async {
+    if (currentRide == null) return;
+
     _stopNotificationSound();
-    setState(() => hasNewRide = false);
+    _socket?.emit('rideAccepted', {
+      'driverId': driverId,
+      'userId': currentRide!['userId'], // ✅ Added userId
+      'rideData': currentRide,
+    });
+
+    await _fetchCustomerPickupLocation(currentRide!['userId']);
+    await _drawRouteToCustomer();
+    _startLiveLocationUpdates();
 
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text("Ride Accepted!")));
 
-    // 🚀 Start sending live location updates every 5 seconds
-    _locationUpdateTimer?.cancel();
-    _locationUpdateTimer = Timer.periodic(Duration(seconds: 5), (_) async {
-      final position = await Geolocator.getCurrentPosition();
-      _sendLocationToBackend(position.latitude, position.longitude);
+    setState(() {
+      currentRide = rideRequests.isNotEmpty ? rideRequests.removeAt(0) : null;
+      if (currentRide != null) _playNotificationSound();
     });
   }
 
@@ -154,7 +223,18 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     _locationUpdateTimer = Timer.periodic(const Duration(seconds: 5), (
       _,
     ) async {
+      if (currentRide == null) return;
       final pos = await Geolocator.getCurrentPosition();
+
+      final userId = currentRide!['userId']; // ✅
+
+      _socket?.emit('driverLiveLocation', {
+        'driverId': driverId,
+        'userId': userId, // ✅ Send only to matched customer
+        'lat': pos.latitude,
+        'lng': pos.longitude,
+      });
+
       _sendLocationToBackend(pos.latitude, pos.longitude);
     });
   }
@@ -190,17 +270,12 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
   Future<void> _fetchCustomerPickupLocation(String customerId) async {
     try {
       final res = await http.get(
-        Uri.parse(
-          'http://192.168.43.236:5002/api/location/customer/$customerId',
-        ),
+        Uri.parse('$apiBase/api/location/customer/$customerId'),
       );
 
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
-        final double lat = data['latitude'];
-        final double lng = data['longitude'];
-
-        final pickupLatLng = LatLng(lat, lng);
+        final pickupLatLng = LatLng(data['latitude'], data['longitude']);
 
         setState(() {
           _markers.removeWhere((m) => m.markerId.value == 'pickup');
@@ -214,9 +289,9 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
             ),
           );
           _pickupLocation = pickupLatLng;
+          _customerPickup = pickupLatLng; // ✅ FIX for route drawing
         });
 
-        // Move map camera to pickup location
         _googleMapController?.animateCamera(
           CameraUpdate.newLatLngZoom(pickupLatLng, 15),
         );
@@ -306,16 +381,28 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
   void dispose() {
     _locationUpdateTimer?.cancel();
     _mapController?.dispose();
+    _socket?.dispose(); // ✅ Proper cleanup
+    _stopNotificationSound();
     super.dispose();
   }
 
   void rejectRide() {
-    _locationUpdateTimer?.cancel(); // ⛔ Stop updates on rejection
-    _stopNotificationSound(); // 🔔 Added
-    setState(() => hasNewRide = false);
+    if (currentRide == null) return;
+
+    _stopNotificationSound();
+    _socket?.emit('rideRejected', {
+      'driverId': driverId,
+      'rideId': currentRide!['rideId'],
+    });
+
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text("Ride Rejected.")));
+
+    setState(() {
+      currentRide = rideRequests.isNotEmpty ? rideRequests.removeAt(0) : null;
+      if (currentRide != null) _playNotificationSound();
+    });
   }
 
   @override
@@ -334,8 +421,16 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
             ),
             Switch(
               value: isOnDuty,
-              onChanged: (value) => setState(() => isOnDuty = value),
-              activeColor: Colors.green,
+              onChanged: (value) {
+                setState(() => isOnDuty = value);
+
+                _socket?.emit('updateDriverStatus', {
+                  'driverId': driverId,
+                  'isOnline': isOnDuty,
+                });
+
+                print("Driver is now ${isOnDuty ? 'Online' : 'Offline'}");
+              },
             ),
           ],
         ),
@@ -353,7 +448,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
           isOnDuty ? buildGoogleMap() : buildOffDutyUI(),
 
           // Show ride request card if available
-          if (hasNewRide) buildRideRequestCard(),
+          if (currentRide != null) buildRideRequestCard(),
 
           // Show bottom sheet with "Go to Pickup" if pickup location is set
           if (_pickupLocation != null)
@@ -386,9 +481,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
                         final googleMapsUrl =
                             "https://www.google.com/maps/dir/?api=1&destination=$lat,$lng&travelmode=driving";
                         launchUrl(
-                          Uri.parse(
-                            "https://www.google.com/maps/dir/?api=1&destination=$lat,$lng&travelmode=driving",
-                          ),
+                          Uri.parse(googleMapsUrl),
                           mode: LaunchMode.externalApplication,
                         );
                       },
@@ -404,6 +497,8 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
   }
 
   Widget buildRideRequestCard() {
+    if (currentRide == null) return const SizedBox();
+
     return Align(
       alignment: Alignment.bottomCenter,
       child: Card(
@@ -423,11 +518,31 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
                     "New Ride Request",
                     style: TextStyle(fontWeight: FontWeight.bold),
                   ),
+                  const Spacer(),
+                  // Ride request count badge
+                  if (rideRequests.isNotEmpty)
+                    CircleAvatar(
+                      radius: 12,
+                      backgroundColor: Colors.red,
+                      child: Text(
+                        "${rideRequests.length + 1}",
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
                 ],
               ),
               const SizedBox(height: 10),
-              Text("Pickup: $ridePickup", style: const TextStyle(fontSize: 16)),
-              Text("Drop: $rideDrop", style: const TextStyle(fontSize: 16)),
+              Text(
+                "Pickup: ${currentRide!['pickup']}",
+                style: const TextStyle(fontSize: 16),
+              ),
+              Text(
+                "Drop: ${currentRide!['drop']}",
+                style: const TextStyle(fontSize: 16),
+              ),
               const SizedBox(height: 16),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
