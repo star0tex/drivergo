@@ -1,286 +1,276 @@
-import 'dart:io';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
+import 'package:http_parser/http_parser.dart'; // ADD THIS
 import 'package:http/http.dart' as http;
-import 'package:permission_handler/permission_handler.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'driver_dashboard_page.dart'; // ✅ Add this (use correct path if needed)
 
-import 'driver_dashboard_page.dart';
 
-const String backendUrl = "http://192.168.210.12:5002";
+class DriverDocumentUploadPage extends StatefulWidget {
+  final String driverId;
 
-class DriverDetailsPage extends StatefulWidget {
-  final String vehicleType;
-  final String city;
-  final String? driverId;
-
-  const DriverDetailsPage({
-    super.key,
-    required this.vehicleType,
-    required this.city,
-    required this.driverId,
-  });
+  const DriverDocumentUploadPage({super.key, required this.driverId});
 
   @override
-  State<DriverDetailsPage> createState() => _DriverDetailsPageState();
+  State<DriverDocumentUploadPage> createState() => _DriverDocumentUploadPageState();
 }
 
-class _DriverDetailsPageState extends State<DriverDetailsPage> {
+
+class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
+  String? vehicleType;
   int currentStep = 0;
-  String? _driverId;
+  final Map<String, File?> uploadedDocs = {};
+  final Map<String, String?> extractedDataMap = {};
+  File? profilePhoto;
+  final picker = ImagePicker();
 
-  final nameController = TextEditingController();
-  final phoneController = TextEditingController();
-  final vehicleController = TextEditingController();
-  final dlNumberController = TextEditingController();
-  final rcNumberController = TextEditingController();
-  final aadhaarNumberController = TextEditingController();
+  final String backendUrl = "http://192.168.190.33:5002";
 
-  File? dlImage, rcImage, aadhaarImage;
-  List<String> uploadedFiles = [];
+  Future<String?> getToken() async => await FirebaseAuth.instance.currentUser!.getIdToken();
 
-  @override
-  void initState() {
-    super.initState();
-    _driverId = widget.driverId;
-    _addCapitalization(nameController);
-    _addCapitalization(vehicleController);
-    _addCapitalization(dlNumberController);
-    _addCapitalization(rcNumberController);
+  Future<String> extractTextFromImage(File imageFile) async {
+    final inputImage = InputImage.fromFile(imageFile);
+    final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
+    final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
+    await textRecognizer.close();
+    return recognizedText.text;
   }
 
-  @override
-  void dispose() {
-    nameController.dispose();
-    phoneController.dispose();
-    vehicleController.dispose();
-    dlNumberController.dispose();
-    rcNumberController.dispose();
-    aadhaarNumberController.dispose();
-    super.dispose();
+  Map<String, String?> extractDocumentData(String ocrText, String docType) {
+  final Map<String, String?> extracted = {};
+  switch (docType.toLowerCase()) {
+    case 'aadhaar':
+      extracted['aadhaarNumber'] = RegExp(r'\b\d{4}\s\d{4}\s\d{4}\b').stringMatch(ocrText);
+      break;
+    case 'pan':
+      extracted['panNumber'] = RegExp(r'[A-Z]{5}[0-9]{4}[A-Z]').stringMatch(ocrText);
+      break;
+    case 'license':
+      extracted['dlNumber'] = RegExp(r'\b[A-Z]{2}\d{2} ?\d{11}\b').stringMatch(ocrText);
+      break;
+    case 'rc':
+      extracted['rcNumber'] = RegExp(r'[A-Z]{2}\d{2}[A-Z]{1,2}\d{4}').stringMatch(ocrText);
+      break;
+    case 'insurance':
+      extracted['policyNumber'] = RegExp(r'\b\d{10,15}\b').stringMatch(ocrText);
+      break;
+    case 'permit':
+    case 'fitnesscertificate':
+      extracted['permitNumber'] = RegExp(r'\b[A-Z0-9]{6,}\b').stringMatch(ocrText);
+      break;
+    default:
+      extracted['raw'] = ocrText;
   }
+  return extracted;
+}
 
-  void _addCapitalization(TextEditingController controller) {
-    controller.addListener(() {
-      final text = controller.text.toUpperCase();
-      if (controller.text != text) {
-        controller.value = TextEditingValue(
-          text: text,
-          selection: TextSelection.collapsed(offset: text.length),
-        );
-      }
-    });
+  List<String> getRequiredDocs(String type) {
+  switch (type) {
+    case 'bike':
+      return ['license', 'rc', 'aadhaar'];
+    case 'auto':
+      return ['license', 'rc', 'pan', 'aadhaar', 'fitnessCertificate'];
+    case 'car':
+      return ['license', 'rc', 'pan', 'aadhaar', 'insurance', 'permit', 'fitnessCertificate'];
+    default:
+      return [];
   }
+}
 
-  void nextStep() {
-    if (currentStep < 4) {
-      setState(() => currentStep++);
-    }
-  }
 
-  Future<void> pickImage(String type) async {
-    if (_driverId == null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("Driver ID is missing!")));
-      return;
-    }
-
-    final permission = await Permission.photos.request();
-    if (!permission.isGranted) return;
-
-    final picker = ImagePicker();
+  Future<void> pickAndUpload(String docType) async {
     final picked = await picker.pickImage(source: ImageSource.gallery);
     if (picked == null) return;
 
     final file = File(picked.path);
+    setState(() => uploadedDocs[docType] = file);
+
+    final ocrText = await extractTextFromImage(file);
+    final extracted = extractDocumentData(ocrText, docType);
+
     setState(() {
-      if (type == 'DL') dlImage = file;
-      if (type == 'RC') rcImage = file;
-      if (type == 'Aadhaar') aadhaarImage = file;
+      extractedDataMap[docType] = jsonEncode(extracted);
     });
 
-    final uri = Uri.parse("$backendUrl/api/ocr/extract-text");
+    final uri = Uri.parse("$backendUrl/api/driver/uploadDocument");
     final request = http.MultipartRequest("POST", uri);
-    request.files.add(await http.MultipartFile.fromPath("document", file.path));
-    request.fields['driverId'] = _driverId!;
-    request.fields['documentType'] = type;
+
+    final token = await getToken();
+    request.headers['Authorization'] = 'Bearer $token';
+    String getMimeType(String path) {
+  final ext = path.toLowerCase();
+  if (ext.endsWith(".png")) return "image/png";
+  if (ext.endsWith(".jpg") || ext.endsWith(".jpeg")) return "image/jpeg";
+  return "application/octet-stream"; // fallback
+}
+
+final mimeType = getMimeType(file.path);
+request.files.add(
+  await http.MultipartFile.fromPath(
+    "document",
+    file.path,
+    contentType: MediaType.parse(mimeType),
+  ),
+);
+  print("📤 Uploading: $docType, $vehicleType, $extracted");
+
+   request.fields['docType'] = docType;
+    request.fields['vehicleType'] = vehicleType!;
+    request.fields['extractedData'] = jsonEncode(extracted);
 
     try {
       final response = await request.send();
       final res = await http.Response.fromStream(response);
-
-      if (response.statusCode == 200) {
-        final result = jsonDecode(res.body);
-        uploadedFiles.add(result['filePath'].toString());
-      } else {
-        print("❌ OCR failed: ${res.body}");
-      }
+      print("✅ $docType upload response: ${res.body}");
     } catch (e) {
-      print("❌ Error uploading image: $e");
+      print("❌ Upload failed: $e");
     }
   }
 
-  Future<void> submitDriver() async {
-    final uri = Uri.parse("$backendUrl/api/driver/register");
-    final body = jsonEncode({
-      "driverId": _driverId,
-      "name": nameController.text.trim(),
-      "phone": phoneController.text.trim(),
-      "vehicleNumber": vehicleController.text.trim(),
-      "dlNumber": dlNumberController.text.trim(),
-      "rcNumber": rcNumberController.text.trim(),
-      "aadhaarNumber": aadhaarNumberController.text.trim(),
-      "vehicleType": widget.vehicleType,
-      "city": widget.city,
-    });
+  Future<void> uploadProfilePhoto() async {
+    if (profilePhoto == null) return;
+    final uri = Uri.parse("$backendUrl/api/driver/uploadProfilePhoto");
+    final request = http.MultipartRequest("POST", uri);
+    request.headers['Authorization'] = 'Bearer ${await getToken()}';
+String getMimeType(String path) {
+  final ext = path.toLowerCase();
+  if (ext.endsWith(".png")) return "image/png";
+  if (ext.endsWith(".jpg") || ext.endsWith(".jpeg")) return "image/jpeg";
+  return "image/jpeg"; // Fallback default
+}
 
-    try {
-      final res = await http.post(
-        uri,
-        body: body,
-        headers: {'Content-Type': 'application/json'},
-      );
-      if (res.statusCode == 201) {
-        final data = jsonDecode(res.body);
-        setState(() {
-          _driverId = data['driverId'];
-        });
-        nextStep();
-      } else {
-        print("❌ Failed to register: ${res.body}");
-      }
-    } catch (e) {
-      print("❌ Network error: $e");
-    }
+final mimeType = getMimeType(profilePhoto!.path);
+
+request.files.add(await http.MultipartFile.fromPath(
+  "image",
+  profilePhoto!.path,
+  contentType: MediaType.parse(mimeType),
+));
+    final response = await request.send();
+    final res = await http.Response.fromStream(response);
+    print("✅ Profile photo uploaded: ${res.body}");
   }
 
-  Widget buildInput(String label, TextEditingController controller) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 10),
-      child: TextField(
-        controller: controller,
-        decoration: InputDecoration(
-          labelText: label.toUpperCase(),
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-          filled: true,
-          fillColor: Colors.grey.shade100,
-        ),
-      ),
-    );
-  }
-
-  Widget buildImagePicker(String label, File? image, VoidCallback onPick) {
+  Widget buildDocBox(String docType) {
+    final file = uploadedDocs[docType];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (image != null)
-          Container(
-            height: 150,
-            width: double.infinity,
-            margin: const EdgeInsets.only(bottom: 10),
-            decoration: BoxDecoration(
-              border: Border.all(color: Colors.grey),
-              borderRadius: BorderRadius.circular(10),
-              image: DecorationImage(
-                image: FileImage(image),
-                fit: BoxFit.cover,
+        Text(docType, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+        const SizedBox(height: 8),
+        file != null
+            ? ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Image.file(file, height: 160, width: double.infinity, fit: BoxFit.cover),
+              )
+            : Container(
+                height: 160,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  color: Colors.grey[100],
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Center(child: Text("No file selected")),
               ),
-            ),
-          ),
-        ElevatedButton(onPressed: onPick, child: Text("Upload $label")),
+        const SizedBox(height: 8),
+        ElevatedButton(
+          onPressed: () => pickAndUpload(docType),
+          child: Text("Upload $docType"),
+        ),
+        const SizedBox(height: 16),
       ],
     );
   }
 
   Widget buildStepContent() {
-    switch (currentStep) {
-      case 0:
-        return Column(
-          children: [
-            buildInput("Full Name", nameController),
-            buildInput("Phone Number", phoneController),
-            buildInput("Vehicle Number", vehicleController),
-            ElevatedButton(
-              onPressed: submitDriver,
-              child: const Text("Register & Continue"),
-            ),
-          ],
-        );
-      case 1:
-        return Column(
-          children: [
-            buildInput("DL Number", dlNumberController),
-            buildImagePicker("Driving License", dlImage, () => pickImage("DL")),
-            ElevatedButton(onPressed: nextStep, child: const Text("Next")),
-          ],
-        );
-      case 2:
-        return Column(
-          children: [
-            buildInput("RC Number", rcNumberController),
-            buildImagePicker("RC Book", rcImage, () => pickImage("RC")),
-            ElevatedButton(onPressed: nextStep, child: const Text("Next")),
-          ],
-        );
-      case 3:
-        return Column(
-          children: [
-            buildInput("Aadhaar Number", aadhaarNumberController),
-            buildImagePicker(
-              "Aadhaar",
-              aadhaarImage,
-              () => pickImage("Aadhaar"),
-            ),
-            ElevatedButton(onPressed: nextStep, child: const Text("Finish")),
-          ],
-        );
-      case 4:
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              "✅ Registration Submitted",
-              style: TextStyle(fontSize: 18),
-            ),
-            const SizedBox(height: 10),
-            const Text(
-              "📄 Uploaded Files:",
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-            for (var path in uploadedFiles)
-              Text(
-                "- ${path.split('/').last}",
-                style: const TextStyle(color: Colors.grey),
-              ),
-            const SizedBox(height: 20),
-            const Text(
-              "⏳ Status: Pending",
-              style: TextStyle(color: Colors.orange, fontSize: 16),
-            ),
-            const SizedBox(height: 30),
-            Center(
+    if (vehicleType == null) {
+      return Column(
+        children: [
+          const Text("Select your vehicle type", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 20),
+          for (var type in ['bike', 'auto', 'car'])
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10),
               child: ElevatedButton(
                 onPressed: () {
-                  if (_driverId != null) {
-                    Navigator.pushReplacement(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => DriverDashboardPage(
-                          driverId: _driverId!,
-                          vehicleType: widget.vehicleType,
-                        ),
-                      ),
-                    );
-                  }
-                },
-                child: const Text("GO TO DASHBOARD"),
+        setState(() => vehicleType = type);
+        print("Current vehicle type: $vehicleType"); // 🔍 Add here
+      },
+                style: ElevatedButton.styleFrom(
+                  minimumSize: const Size(double.infinity, 50),
+                  backgroundColor: Colors.blue.shade800,
+                ),
+                child: Text(type.toUpperCase()),
               ),
-            ),
-          ],
-        );
-      default:
-        return const Text("Unknown Step");
+            )
+        ],
+      );
+    } else if (currentStep < getRequiredDocs(vehicleType!).length) {
+      final docType = getRequiredDocs(vehicleType!)[currentStep];
+      return Column(
+        children: [
+          buildDocBox(docType),
+          ElevatedButton(
+            onPressed: () => setState(() => currentStep++),
+            child: const Text("Next"),
+          )
+        ],
+      );
+    } else {
+      return Column(
+        children: [
+          const Text("Upload Profile Photo", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 20),
+          profilePhoto != null
+              ? ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Image.file(profilePhoto!, height: 160, width: double.infinity, fit: BoxFit.cover),
+                )
+              : Container(
+                  height: 160,
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[200],
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Center(child: Text("No photo selected")),
+                ),
+          const SizedBox(height: 16),
+          ElevatedButton(
+            onPressed: () async {
+              final picked = await picker.pickImage(source: ImageSource.gallery);
+              if (picked != null) setState(() => profilePhoto = File(picked.path));
+            },
+            child: const Text("Select Photo"),
+          ),
+          const SizedBox(height: 8),
+ElevatedButton(
+  onPressed: uploadProfilePhoto,
+  style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+  child: const Text("Finish"),
+),
+const SizedBox(height: 8),
+ElevatedButton(
+  onPressed: () {
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (context) => DriverDashboardPage(
+          driverId: widget.driverId,
+          vehicleType: vehicleType!,
+        ),
+      ),
+    );
+  },
+  style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo),
+  child: const Text("Go to Dashboard"),
+),
+
+        ],
+      );
     }
   }
 
@@ -288,8 +278,8 @@ class _DriverDetailsPageState extends State<DriverDetailsPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text("Driver Onboarding - Step ${currentStep + 1}"),
-        backgroundColor: Colors.indigo,
+        title: const Text("Driver Registration"),
+        backgroundColor: Colors.blue.shade800,
         foregroundColor: Colors.white,
       ),
       body: Padding(

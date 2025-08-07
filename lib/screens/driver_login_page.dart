@@ -1,11 +1,11 @@
+import 'dart:convert';
+import 'package:drivergoo/screens/driver_details_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:jwt_decoder/jwt_decoder.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
-import 'dart:convert';
-import 'driver_onboarding_page.dart';
-import 'driver_dashboard_page.dart';
+import 'package:jwt_decoder/jwt_decoder.dart';
+
 
 class DriverLoginPage extends StatefulWidget {
   const DriverLoginPage({super.key});
@@ -23,7 +23,6 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
   bool _codeSent = false;
   bool _autoVerified = false;
 
-  /// ✅ Handles login after OTP verification
   Future<void> _routeDriver(String phoneOnly) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
@@ -64,45 +63,33 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
     }
 
     try {
-      // ✅ Send request to backend
       final res = await http.post(
-        Uri.parse("http://192.168.210.12:5002/api/auth/firebase-login"),
+        Uri.parse("http://192.168.190.33:5002/api/auth/firebase-login"),
         headers: {
           "Content-Type": "application/json",
           "Authorization": "Bearer $token",
         },
-        body: jsonEncode({"phone": "+91$phoneOnly", "role": "driver"}),
+        body: jsonEncode({
+          "phone": "+91$phoneOnly",
+          "role": "driver", // ✅ required for backend to register as driver
+        }),
       );
 
       Navigator.pop(context);
 
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
-        final userData = data["user"];
-        final bool isNewDriver =
-            data["newUser"] == true || userData["role"] != "driver";
+        final isNewUser = data["newUser"] == true;
+        _showSuccess(isNewUser ? "Welcome, driver!" : "Welcome back!");
 
-        if (!isNewDriver) {
-          // ✅ Existing driver → Dashboard with stored vehicle type
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (_) => DriverDashboardPage(
-                driverId: userData["_id"],
-                vehicleType:
-                    userData["vehicleType"] ?? "", // Use DB vehicleType
-              ),
-            ),
-          );
-        } else {
-          // ✅ New driver or customer converting to driver → Onboarding
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (_) => DriverOnboardingPage(driverId: userData["_id"]),
-            ),
-          );
-        }
+       final driverId = data["user"]["phone"]; // or data["user"]["_id"]
+Navigator.pushReplacement(
+  context,
+  MaterialPageRoute(
+    builder: (_) => DriverDocumentUploadPage(driverId: driverId),
+  ),
+);
+
       } else {
         _showError("Login failed: ${res.body}");
       }
@@ -112,7 +99,6 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
     }
   }
 
-  /// ✅ Send OTP
   Future<void> _sendOTP() async {
     await FirebaseAuth.instance.signOut();
     setState(() {
@@ -135,15 +121,12 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
         timeout: const Duration(seconds: 60),
         verificationCompleted: (PhoneAuthCredential credential) async {
           try {
-            final userCred = await FirebaseAuth.instance.signInWithCredential(
-              credential,
-            );
+            final userCred = await FirebaseAuth.instance.signInWithCredential(credential);
             if (userCred.user != null) {
               _autoVerified = true;
               await _routeDriver(rawPhone);
             }
           } catch (e) {
-            debugPrint('Auto-verify error: $e');
             _showError("Auto-verification failed.");
           }
         },
@@ -155,10 +138,7 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
             _verificationId = verId;
             _codeSent = true;
           });
-          Future.delayed(
-            const Duration(milliseconds: 100),
-            () => _otpFocus.requestFocus(),
-          );
+          Future.delayed(const Duration(milliseconds: 100), () => _otpFocus.requestFocus());
         },
         codeAutoRetrievalTimeout: (String verId) {
           _verificationId = verId;
@@ -169,7 +149,6 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
     }
   }
 
-  /// ✅ Verify OTP
   Future<void> _verifyOTP() async {
     if (_autoVerified) return;
 
@@ -190,9 +169,7 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
     );
 
     try {
-      final userCred = await FirebaseAuth.instance.signInWithCredential(
-        credential,
-      );
+      final userCred = await FirebaseAuth.instance.signInWithCredential(credential);
       if (userCred.user == null) {
         throw Exception("Firebase user is null");
       }
@@ -238,107 +215,98 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
     );
   }
 
+  void _showSuccess(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message, textAlign: TextAlign.center),
+        backgroundColor: Colors.green[600],
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          Opacity(
-            opacity: 0.15,
-            child: Image.asset(
-              'assets/images/background.png',
-              fit: BoxFit.fitHeight,
-            ),
-          ),
-          SafeArea(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 24.0,
-                vertical: 48,
+      backgroundColor: const Color(0xFFF0F4FF),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 48),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Driver Login',
+                style: TextStyle(
+                  fontSize: 26,
+                  fontFamily: 'Montserrat',
+                  fontWeight: FontWeight.bold,
+                  color: Colors.blue[900],
+                ),
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Driver Login',
-                    style: TextStyle(
-                      fontSize: 26,
-                      fontFamily: 'Harrington',
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 40),
-                  const Text(
-                    'Enter your mobile number',
-                    style: TextStyle(fontSize: 18),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: _phoneController,
-                    keyboardType: TextInputType.phone,
-                    maxLength: 10,
-                    inputFormatters: [
-                      FilteringTextInputFormatter.digitsOnly,
-                      LengthLimitingTextInputFormatter(10),
-                    ],
-                    decoration: InputDecoration(
-                      prefixText: '+91 ',
-                      hintText: '0000000000',
-                      filled: true,
-                      fillColor: Colors.white.withOpacity(0.2),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      counterText: '',
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  if (_codeSent)
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('Enter OTP', style: TextStyle(fontSize: 18)),
-                        const SizedBox(height: 10),
-                        TextField(
-                          controller: _otpController,
-                          focusNode: _otpFocus,
-                          keyboardType: TextInputType.number,
-                          maxLength: 6,
-                          inputFormatters: [
-                            LengthLimitingTextInputFormatter(6),
-                            FilteringTextInputFormatter.digitsOnly,
-                          ],
-                          decoration: InputDecoration(
-                            hintText: '6-digit OTP',
-                            filled: true,
-                            fillColor: Colors.white.withOpacity(0.2),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            counterText: '',
-                          ),
-                        ),
-                      ],
-                    ),
-                  const SizedBox(height: 30),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color.fromRGBO(98, 205, 255, 1),
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                      ),
-                      onPressed: _codeSent ? _verifyOTP : _sendOTP,
-                      child: Text(_codeSent ? 'Verify OTP' : 'Send OTP'),
-                    ),
-                  ),
+              const SizedBox(height: 40),
+              const Text('Enter your mobile number', style: TextStyle(fontSize: 18)),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _phoneController,
+                keyboardType: TextInputType.phone,
+                maxLength: 10,
+                inputFormatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(10),
                 ],
+                decoration: InputDecoration(
+                  prefixText: '+91 ',
+                  hintText: '0000000000',
+                  filled: true,
+                  fillColor: Colors.white.withOpacity(0.2),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  counterText: '',
+                ),
               ),
-            ),
+              const SizedBox(height: 20),
+              if (_codeSent)
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Enter OTP', style: TextStyle(fontSize: 18)),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _otpController,
+                      focusNode: _otpFocus,
+                      keyboardType: TextInputType.number,
+                      maxLength: 6,
+                      inputFormatters: [
+                        LengthLimitingTextInputFormatter(6),
+                        FilteringTextInputFormatter.digitsOnly,
+                      ],
+                      decoration: InputDecoration(
+                        hintText: '6-digit OTP',
+                        filled: true,
+                        fillColor: Colors.white.withOpacity(0.2),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                        counterText: '',
+                      ),
+                    ),
+                  ],
+                ),
+              const SizedBox(height: 30),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF1565C0),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                  ),
+                  onPressed: _codeSent ? _verifyOTP : _sendOTP,
+                  child: Text(_codeSent ? 'Verify OTP' : 'Send OTP'),
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }

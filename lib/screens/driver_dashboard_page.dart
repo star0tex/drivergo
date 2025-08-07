@@ -24,7 +24,7 @@ class DriverDashboardPage extends StatefulWidget {
 }
 
 class _DriverDashboardPageState extends State<DriverDashboardPage> {
-  final String apiBase = 'http://192.168.210.12:5002';
+  final String apiBase = 'http://192.168.190.33:5002';
 
   bool isOnDuty = false;
   List<Map<String, dynamic>> rideRequests = []; // Queue of ride requests
@@ -58,12 +58,10 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     final pos = await Geolocator.getCurrentPosition(
       desiredAccuracy: LocationAccuracy.high,
     );
-    _socket?.emit('registerDriver', {
-      'driverId': driverId,
-      'lat': pos.latitude,
-      'lng': pos.longitude,
-      'isOnline': isOnline,
-    });
+    _socket!.emit('driver:register', {
+  'driverId': driverId,
+});
+
   }
 
   void _connectSocket() async {
@@ -74,43 +72,57 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
 
     _socket!.onConnect((_) async {
       print("✅ Connected to socket server");
+    // ✅ Listen for short trip
+
 
       // Get driver location and register driver
       final pos = await Geolocator.getCurrentPosition();
-      _socket!.emit('registerDriver', {
-        'driverId': driverId,
-        'lat': pos.latitude,
-        'lng': pos.longitude,
-      });
+     _socket!.emit('driver:register', {
+  'driverId': driverId,
+});
+
+_socket!.on('tripRequest', _handleIncomingTrip);
+_socket!.on('trip:request', _handleIncomingTrip);
+_socket!.on('parcelTripRequest', _handleIncomingTrip);
+_socket!.on('longTripRequest', _handleIncomingTrip);
+
+
+// ✅ Listen for parcel trip
+
       print(
         "📡 Driver registered with location: ${pos.latitude}, ${pos.longitude}",
       );
     });
 
     // FIX: Listen to correct event
-    _socket?.on('newRideRequest', (data) {
-      print("📥 New ride request: $data");
-
-      if (!isOnDuty) return;
-
-      final request = Map<String, dynamic>.from(data);
-
-      // ✅ Only accept if vehicleType matches
-      if (request['vehicleType'] == widget.vehicleType) {
-        setState(() {
-          rideRequests.add(request);
-          currentRide = rideRequests.isNotEmpty ? rideRequests.first : null;
-        });
-        _playNotificationSound();
-      } else {
-        print("🚫 Ignored ride due to vehicle mismatch");
-      }
-    });
-
-    _socket!.onDisconnect((_) {
-      print("❌ Disconnected from socket server");
-    });
+   
   }
+  void _handleIncomingTrip(dynamic data) {
+ print("📥 Incoming trip: $data");  // Log to see what the backend sends
+
+  if (data['vehicleType'] != widget.vehicleType) {
+    print("🚫 Vehicle type mismatch. Ignored trip.");
+    return;
+  }
+  
+
+if (!isOnDuty) {
+    print("❌ Ignored because driver is off duty");
+    return;
+  }
+  final request = Map<String, dynamic>.from(data);
+
+  if (request['vehicleType'] == widget.vehicleType) {
+    setState(() {
+      rideRequests.add(request);
+      currentRide = rideRequests.isNotEmpty ? rideRequests.first : null;
+    });
+    _playNotificationSound();
+  } else {
+    print("🚫 Ignored trip due to vehicle mismatch");
+  }
+}
+
 
   void _playNotificationSound() async {
     // 🔔 Added
@@ -142,7 +154,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     final idToken = await user.getIdToken(); // Firebase ID token
 
     final response = await http.post(
-      Uri.parse('http://192.168.210.12:5002/api/driver/login'),
+      Uri.parse('http://192.168.190.33:5002/api/driver/login'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
         'firebaseIdToken': idToken,
@@ -198,13 +210,16 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     if (currentRide == null) return;
 
     _stopNotificationSound();
-    _socket?.emit('rideAccepted', {
-      'driverId': driverId,
-      'userId': currentRide!['userId'], // ✅ Added userId
-      'rideData': currentRide,
-    });
+  _socket?.emit('driver:accept_trip', {
+  'driverId': driverId,
+  'tripId': currentRide!['tripId'],
+});
 
-    await _fetchCustomerPickupLocation(currentRide!['userId']);
+
+
+
+
+await _fetchCustomerPickupLocation(currentRide!['customerId']);
     await _drawRouteToCustomer();
     _startLiveLocationUpdates();
 
@@ -536,11 +551,11 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
               ),
               const SizedBox(height: 10),
               Text(
-                "Pickup: ${currentRide!['pickup']}",
+                "Pickup: ${currentRide!['pickup']['address'] ?? ''}",
                 style: const TextStyle(fontSize: 16),
               ),
               Text(
-                "Drop: ${currentRide!['drop']}",
+                "Drop: ${currentRide!['drop']['address'] ?? ''}",
                 style: const TextStyle(fontSize: 16),
               ),
               const SizedBox(height: 16),
