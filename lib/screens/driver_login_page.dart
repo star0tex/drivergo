@@ -6,7 +6,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 import 'package:jwt_decoder/jwt_decoder.dart';
 
-
 class DriverLoginPage extends StatefulWidget {
   const DriverLoginPage({super.key});
 
@@ -64,7 +63,7 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
 
     try {
       final res = await http.post(
-        Uri.parse("http://192.168.190.33:5002/api/auth/firebase-login"),
+        Uri.parse("http://192.168.210.12:5002/api/auth/firebase-login"),
         headers: {
           "Content-Type": "application/json",
           "Authorization": "Bearer $token",
@@ -82,14 +81,13 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
         final isNewUser = data["newUser"] == true;
         _showSuccess(isNewUser ? "Welcome, driver!" : "Welcome back!");
 
-       final driverId = data["user"]["phone"]; // or data["user"]["_id"]
-Navigator.pushReplacement(
-  context,
-  MaterialPageRoute(
-    builder: (_) => DriverDocumentUploadPage(driverId: driverId),
-  ),
-);
-
+        final driverId = data["user"]["phone"]; // or data["user"]["_id"]
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (_) => DriverDocumentUploadPage(driverId: driverId),
+          ),
+        );
       } else {
         _showError("Login failed: ${res.body}");
       }
@@ -121,7 +119,9 @@ Navigator.pushReplacement(
         timeout: const Duration(seconds: 60),
         verificationCompleted: (PhoneAuthCredential credential) async {
           try {
-            final userCred = await FirebaseAuth.instance.signInWithCredential(credential);
+            final userCred = await FirebaseAuth.instance.signInWithCredential(
+              credential,
+            );
             if (userCred.user != null) {
               _autoVerified = true;
               await _routeDriver(rawPhone);
@@ -138,7 +138,10 @@ Navigator.pushReplacement(
             _verificationId = verId;
             _codeSent = true;
           });
-          Future.delayed(const Duration(milliseconds: 100), () => _otpFocus.requestFocus());
+          Future.delayed(
+            const Duration(milliseconds: 100),
+            () => _otpFocus.requestFocus(),
+          );
         },
         codeAutoRetrievalTimeout: (String verId) {
           _verificationId = verId;
@@ -169,7 +172,9 @@ Navigator.pushReplacement(
     );
 
     try {
-      final userCred = await FirebaseAuth.instance.signInWithCredential(credential);
+      final userCred = await FirebaseAuth.instance.signInWithCredential(
+        credential,
+      );
       if (userCred.user == null) {
         throw Exception("Firebase user is null");
       }
@@ -246,7 +251,10 @@ Navigator.pushReplacement(
                 ),
               ),
               const SizedBox(height: 40),
-              const Text('Enter your mobile number', style: TextStyle(fontSize: 18)),
+              const Text(
+                'Enter your mobile number',
+                style: TextStyle(fontSize: 18),
+              ),
               const SizedBox(height: 10),
               TextField(
                 controller: _phoneController,
@@ -261,7 +269,9 @@ Navigator.pushReplacement(
                   hintText: '0000000000',
                   filled: true,
                   fillColor: Colors.white.withOpacity(0.2),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                   counterText: '',
                 ),
               ),
@@ -285,7 +295,9 @@ Navigator.pushReplacement(
                         hintText: '6-digit OTP',
                         filled: true,
                         fillColor: Colors.white.withOpacity(0.2),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
                         counterText: '',
                       ),
                     ),

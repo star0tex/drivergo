@@ -24,7 +24,7 @@ class DriverDashboardPage extends StatefulWidget {
 }
 
 class _DriverDashboardPageState extends State<DriverDashboardPage> {
-  final String apiBase = 'http://192.168.190.33:5002';
+  final String apiBase = 'http://192.168.210.12:5002';
 
   bool isOnDuty = false;
   List<Map<String, dynamic>> rideRequests = []; // Queue of ride requests
@@ -54,14 +54,21 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     _registerDriver(false);
   }
 
-  void _registerDriver(bool isOnline) async {
+  Future<void> _registerDriver(bool isOnline) async {
     final pos = await Geolocator.getCurrentPosition(
       desiredAccuracy: LocationAccuracy.high,
     );
-    _socket!.emit('driver:register', {
-  'driverId': driverId,
-});
 
+    _socket!.emit('updateDriverStatus', {
+      'driverId': driverId,
+      'isOnline': isOnline,
+      'location': {
+        'type': 'Point',
+        'coordinates': [pos.longitude, pos.latitude], // ✅ GeoJSON format
+      },
+    });
+
+    print("📡 Driver status sent: ${isOnline ? 'Online' : 'Offline'}");
   }
 
   void _connectSocket() async {
@@ -72,22 +79,21 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
 
     _socket!.onConnect((_) async {
       print("✅ Connected to socket server");
-    // ✅ Listen for short trip
-
+      // ✅ Listen for short trip
 
       // Get driver location and register driver
       final pos = await Geolocator.getCurrentPosition();
-     _socket!.emit('driver:register', {
-  'driverId': driverId,
-});
+      _socket!.emit('updateDriverStatus', {
+        'driverId': driverId,
+        'isOnline': isOnDuty,
+      });
 
-_socket!.on('tripRequest', _handleIncomingTrip);
-_socket!.on('trip:request', _handleIncomingTrip);
-_socket!.on('parcelTripRequest', _handleIncomingTrip);
-_socket!.on('longTripRequest', _handleIncomingTrip);
+      _socket!.on('tripRequest', _handleIncomingTrip);
+      _socket!.on('shortTripReuest', _handleIncomingTrip);
+      _socket!.on('parcelTripRequest', _handleIncomingTrip);
+      _socket!.on('longTripRequest', _handleIncomingTrip);
 
-
-// ✅ Listen for parcel trip
+      // ✅ Listen for parcel trip
 
       print(
         "📡 Driver registered with location: ${pos.latitude}, ${pos.longitude}",
@@ -95,34 +101,32 @@ _socket!.on('longTripRequest', _handleIncomingTrip);
     });
 
     // FIX: Listen to correct event
-   
   }
+
   void _handleIncomingTrip(dynamic data) {
- print("📥 Incoming trip: $data");  // Log to see what the backend sends
+    print("📥 Incoming trip: $data"); // Log to see what the backend sends
 
-  if (data['vehicleType'] != widget.vehicleType) {
-    print("🚫 Vehicle type mismatch. Ignored trip.");
-    return;
+    if (data['vehicleType'] != widget.vehicleType) {
+      print("🚫 Vehicle type mismatch. Ignored trip.");
+      return;
+    }
+
+    if (!isOnDuty) {
+      print("❌ Ignored because driver is off duty");
+      return;
+    }
+    final request = Map<String, dynamic>.from(data);
+
+    if (request['vehicleType'] == widget.vehicleType) {
+      setState(() {
+        rideRequests.add(request);
+        currentRide = rideRequests.isNotEmpty ? rideRequests.first : null;
+      });
+      _playNotificationSound();
+    } else {
+      print("🚫 Ignored trip due to vehicle mismatch");
+    }
   }
-  
-
-if (!isOnDuty) {
-    print("❌ Ignored because driver is off duty");
-    return;
-  }
-  final request = Map<String, dynamic>.from(data);
-
-  if (request['vehicleType'] == widget.vehicleType) {
-    setState(() {
-      rideRequests.add(request);
-      currentRide = rideRequests.isNotEmpty ? rideRequests.first : null;
-    });
-    _playNotificationSound();
-  } else {
-    print("🚫 Ignored trip due to vehicle mismatch");
-  }
-}
-
 
   void _playNotificationSound() async {
     // 🔔 Added
@@ -154,7 +158,7 @@ if (!isOnDuty) {
     final idToken = await user.getIdToken(); // Firebase ID token
 
     final response = await http.post(
-      Uri.parse('http://192.168.190.33:5002/api/driver/login'),
+      Uri.parse('http://192.168.210.12:5002/api/driver/login'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
         'firebaseIdToken': idToken,
@@ -210,16 +214,12 @@ if (!isOnDuty) {
     if (currentRide == null) return;
 
     _stopNotificationSound();
-  _socket?.emit('driver:accept_trip', {
-  'driverId': driverId,
-  'tripId': currentRide!['tripId'],
-});
+    _socket?.emit('driver:accept_trip', {
+      'driverId': driverId,
+      'tripId': currentRide!['tripId'],
+    });
 
-
-
-
-
-await _fetchCustomerPickupLocation(currentRide!['customerId']);
+    await _fetchCustomerPickupLocation(currentRide!['customerId']);
     await _drawRouteToCustomer();
     _startLiveLocationUpdates();
 
@@ -436,15 +436,9 @@ await _fetchCustomerPickupLocation(currentRide!['customerId']);
             ),
             Switch(
               value: isOnDuty,
-              onChanged: (value) {
+              onChanged: (value) async {
                 setState(() => isOnDuty = value);
-
-                _socket?.emit('updateDriverStatus', {
-                  'driverId': driverId,
-                  'isOnline': isOnDuty,
-                });
-
-                print("Driver is now ${isOnDuty ? 'Online' : 'Offline'}");
+                await _registerDriver(isOnDuty);
               },
             ),
           ],
