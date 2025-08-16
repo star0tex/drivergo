@@ -8,7 +8,8 @@ import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:socket_io_client/socket_io_client.dart' as io;
+//import 'package:socket_io_client/socket_io_client.dart' as io;
+import 'package:drivergoo/services/socket_service.dart';
 
 class DriverDashboardPage extends StatefulWidget {
   final String driverId;
@@ -24,7 +25,7 @@ class DriverDashboardPage extends StatefulWidget {
 }
 
 class _DriverDashboardPageState extends State<DriverDashboardPage> {
-  final String apiBase = 'http://192.168.210.12:5002';
+  final String apiBase = 'http://192.168.190.33:5002';
 
   bool isOnDuty = false;
   List<Map<String, dynamic>> rideRequests = []; // Queue of ride requests
@@ -37,11 +38,10 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
   LatLng? _currentPosition;
   LatLng? _customerPickup;
   Timer? _locationUpdateTimer;
-  late io.Socket socket;
   final Set<Marker> _markers = {};
   final Set<Polyline> _polylines = {};
   final AudioPlayer _audioPlayer = AudioPlayer();
-  io.Socket? _socket;
+  final DriverSocketService _socketService = DriverSocketService();
   @override
   void initState() {
     super.initState();
@@ -59,73 +59,157 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
       desiredAccuracy: LocationAccuracy.high,
     );
 
-    _socket!.emit('updateDriverStatus', {
-      'driverId': driverId,
-      'isOnline': isOnline,
-      'location': {
-        'type': 'Point',
-        'coordinates': [pos.longitude, pos.latitude], // ✅ GeoJSON format
-      },
-    });
+    // Send HTTP request to update driver status in backend database
+    try {
+      final response = await http.post(
+        Uri.parse('$apiBase/api/driver/status'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'driverId': driverId,
+          'isOnline': isOnline,
+          'lat': pos.latitude,
+          'lng': pos.longitude,
+          'vehicleType': widget.vehicleType
+        }),
+      );
+      
+      if (response.statusCode == 200) {
+        print("✅ Driver status updated in backend: ${isOnline ? 'Online' : 'Offline'}");
+      } else {
+        print("❌ Failed to update driver status: ${response.statusCode}, ${response.body}");
+      }
+    } catch (e) {
+      print("❌ Error updating driver status: $e");
+    }
+    
+    if (isOnline) {
+      // If driver is going online, ensure socket is connected first
+      _ensureSocketConnection();
+      
+      // Explicitly update driver status via socket service
+      _socketService.updateDriverStatus(
+        driverId,
+        isOnline,
+        pos.latitude,
+        pos.longitude,
+        widget.vehicleType
+      );
+    } else {
+      // If going offline, first update status then disconnect socket
+      _socketService.updateDriverStatus(
+        driverId,
+        isOnline,
+        pos.latitude,
+        pos.longitude,
+        widget.vehicleType
+      );
+      
+      // Disconnect after sending offline status
+      _socketService.disconnect();
+    }
 
+    // Use the socket service to update driver location
+    _socketService.updateDriverLocation(
+      driverId,
+      pos.latitude,
+      pos.longitude,
+    );
+    
     print("📡 Driver status sent: ${isOnline ? 'Online' : 'Offline'}");
+  }
+  
+  void _ensureSocketConnection() {
+    print("🔄 Ensuring socket connection with status: ${isOnDuty ? 'Online' : 'Offline'}");
+    // Get current position and reconnect socket if needed
+    Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high).then((position) {
+      print("📍 Got position for socket connection: ${position.latitude}, ${position.longitude}");
+      _socketService.connect(
+        driverId,
+        position.latitude,
+        position.longitude,
+        vehicleType: widget.vehicleType,
+        isOnline: isOnDuty,
+      );
+      
+      // Set up the ride request callback
+      _socketService.onRideRequest = _handleIncomingTrip;
+      
+      // Send additional vehicle type information to backend
+      try {
+        http.post(
+          Uri.parse('$apiBase/api/driver/register'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'driverId': driverId,
+            'lat': position.latitude,
+            'lng': position.longitude,
+            'vehicleType': widget.vehicleType,
+            'isOnline': true
+          }),
+        ).then((response) {
+          if (response.statusCode == 200) {
+            print("✅ Driver registered with vehicle type: ${widget.vehicleType}");
+          } else {
+            print("❌ Failed to register driver: ${response.statusCode}, ${response.body}");
+          }
+        });
+      } catch (e) {
+        print("❌ Error registering driver: $e");
+      }
+      
+      print("✅ Socket connection ensured");
+    });
   }
 
   void _connectSocket() async {
-    _socket = io.io(apiBase, <String, dynamic>{
-      'transports': ['websocket'],
-      'autoConnect': true,
-    });
-
-    _socket!.onConnect((_) async {
-      print("✅ Connected to socket server");
-      // ✅ Listen for short trip
-
-      // Get driver location and register driver
-      final pos = await Geolocator.getCurrentPosition();
-      _socket!.emit('updateDriverStatus', {
-        'driverId': driverId,
-        'isOnline': isOnDuty,
-      });
-
-      _socket!.on('tripRequest', _handleIncomingTrip);
-      _socket!.on('shortTripReuest', _handleIncomingTrip);
-      _socket!.on('parcelTripRequest', _handleIncomingTrip);
-      _socket!.on('longTripRequest', _handleIncomingTrip);
-
-      // ✅ Listen for parcel trip
-
-      print(
-        "📡 Driver registered with location: ${pos.latitude}, ${pos.longitude}",
-      );
-    });
-
-    // FIX: Listen to correct event
+    // Get current location
+    final pos = await Geolocator.getCurrentPosition(
+      desiredAccuracy: LocationAccuracy.high,
+    );
+    
+    // Connect using the DriverSocketService
+    _socketService.connect(
+      driverId,
+      pos.latitude,
+      pos.longitude,
+      vehicleType: widget.vehicleType,
+      isOnline: isOnDuty, // Pass the current duty status
+    );
+    
+    // Set up the ride request callback
+    _socketService.onRideRequest = _handleIncomingTrip;
+    
+    print("✅ Connected to socket server");
+    print("📡 Driver registered with location: ${pos.latitude}, ${pos.longitude}");
+    print("📡 Driver status: ${isOnDuty ? 'Online' : 'Offline'}");
   }
 
   void _handleIncomingTrip(dynamic data) {
     print("📥 Incoming trip: $data"); // Log to see what the backend sends
 
-    if (data['vehicleType'] != widget.vehicleType) {
-      print("🚫 Vehicle type mismatch. Ignored trip.");
-      return;
-    }
-
+    // First check if driver is on duty
     if (!isOnDuty) {
       print("❌ Ignored because driver is off duty");
       return;
     }
+    
     final request = Map<String, dynamic>.from(data);
-
-    if (request['vehicleType'] == widget.vehicleType) {
-      setState(() {
-        rideRequests.add(request);
-        currentRide = rideRequests.isNotEmpty ? rideRequests.first : null;
-      });
-      _playNotificationSound();
-    } else {
-      print("🚫 Ignored trip due to vehicle mismatch");
+    
+    // Compare vehicle types case-insensitively
+    String requestVehicleType = request['vehicleType']?.toString().toLowerCase() ?? '';
+    String driverVehicleType = widget.vehicleType.toLowerCase();
+    
+    if (requestVehicleType != driverVehicleType) {
+      print("🚫 Vehicle type mismatch. Expected: $driverVehicleType, Got: $requestVehicleType");
+      return;
     }
+
+    // Process the ride request
+    setState(() {
+      rideRequests.add(request);
+      currentRide = rideRequests.isNotEmpty ? rideRequests.first : null;
+    });
+    _playNotificationSound();
   }
 
   void _playNotificationSound() async {
@@ -158,7 +242,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     final idToken = await user.getIdToken(); // Firebase ID token
 
     final response = await http.post(
-      Uri.parse('http://192.168.210.12:5002/api/driver/login'),
+      Uri.parse('http://192.168.190.33:5002/api/driver/login'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
         'firebaseIdToken': idToken,
@@ -214,12 +298,15 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     if (currentRide == null) return;
 
     _stopNotificationSound();
-    _socket?.emit('driver:accept_trip', {
-      'driverId': driverId,
-      'tripId': currentRide!['tripId'],
-    });
+    
+    // Use the socket service to accept the ride
+    _socketService.acceptRide(
+      driverId,
+      currentRide!['userId'] ?? currentRide!['customerId'],
+      currentRide!,
+    );
 
-    await _fetchCustomerPickupLocation(currentRide!['customerId']);
+    await _fetchCustomerPickupLocation(currentRide!['userId'] ?? currentRide!['customerId']);
     await _drawRouteToCustomer();
     _startLiveLocationUpdates();
 
@@ -241,14 +328,12 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
       if (currentRide == null) return;
       final pos = await Geolocator.getCurrentPosition();
 
-      final userId = currentRide!['userId']; // ✅
-
-      _socket?.emit('driverLiveLocation', {
-        'driverId': driverId,
-        'userId': userId, // ✅ Send only to matched customer
-        'lat': pos.latitude,
-        'lng': pos.longitude,
-      });
+      // Use the socket service to update driver location
+      _socketService.updateDriverLocation(
+        driverId,
+        pos.latitude,
+        pos.longitude,
+      );
 
       _sendLocationToBackend(pos.latitude, pos.longitude);
     });
@@ -260,11 +345,10 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
         Uri.parse('$apiBase/api/location/updateDriver'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'driverId': driverId, // ✅ NOT null or empty
-
-          'latitude': lat, // ✅ Fix this
+          'driverId': driverId,
+          'latitude': lat,
           'longitude': lng,
-          'type': 'customer', // <-- REQUIRED!
+          'type': 'driver', // Changed from 'customer' to 'driver'
         }),
       );
 
@@ -328,12 +412,27 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
       '&key=AIzaSyCqfjktNhxjKfM-JmpSwBk9KtgY429QWY8',
     );
 
-    final response = await http.get(url);
-    if (response.statusCode != 200) return;
+    List<LatLng> polylinePoints = [];
+    
+    try {
+      final response = await http.get(url);
+      if (response.statusCode != 200) {
+        print("❌ Failed to get directions: ${response.statusCode}");
+        return;
+      }
 
-    final data = jsonDecode(response.body);
-    final encodedPolyline = data['routes'][0]['overview_polyline']['points'];
-    final polylinePoints = _decodePolyline(encodedPolyline);
+      final data = jsonDecode(response.body);
+      if (data['status'] != 'OK' || data['routes'].isEmpty) {
+        print("❌ No routes found: ${data['status']}");
+        return;
+      }
+      
+      final encodedPolyline = data['routes'][0]['overview_polyline']['points'];
+      polylinePoints = _decodePolyline(encodedPolyline);
+    } catch (e) {
+      print("❌ Error drawing route: $e");
+      return;
+    }
 
     setState(() {
       _polylines.clear();
@@ -396,7 +495,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
   void dispose() {
     _locationUpdateTimer?.cancel();
     _mapController?.dispose();
-    _socket?.dispose(); // ✅ Proper cleanup
+    _socketService.disconnect(); // Disconnect the socket service
     _stopNotificationSound();
     super.dispose();
   }
@@ -405,10 +504,10 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     if (currentRide == null) return;
 
     _stopNotificationSound();
-    _socket?.emit('rideRejected', {
-      'driverId': driverId,
-      'rideId': currentRide!['rideId'],
-    });
+    _socketService.rejectRide(
+      driverId,
+      currentRide!['rideId'] ?? currentRide!['id'] ?? '',
+    );
 
     ScaffoldMessenger.of(
       context,
@@ -436,9 +535,13 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
             ),
             Switch(
               value: isOnDuty,
+              activeColor: Colors.green,
+              inactiveThumbColor: Colors.red,
               onChanged: (value) async {
+                print("🔄 Toggle switch changed to: ${value ? 'Online' : 'Offline'}");
                 setState(() => isOnDuty = value);
                 await _registerDriver(isOnDuty);
+                print("✅ _registerDriver completed with status: ${isOnDuty ? 'Online' : 'Offline'}");
               },
             ),
           ],
