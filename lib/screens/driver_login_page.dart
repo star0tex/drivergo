@@ -1,5 +1,7 @@
 import 'dart:convert';
 import 'package:drivergoo/screens/driver_details_page.dart';
+import 'package:drivergoo/screens/documents_review_page.dart';
+import 'package:drivergoo/screens/driver_dashboard_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -21,6 +23,8 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
   String _verificationId = '';
   bool _codeSent = false;
   bool _autoVerified = false;
+
+  final String backendUrl = "http://192.168.1.16:5002";
 
   Future<void> _routeDriver(String phoneOnly) async {
     final user = FirebaseAuth.instance.currentUser;
@@ -63,14 +67,14 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
 
     try {
       final res = await http.post(
-        Uri.parse("http://192.168.190.33:5002/api/auth/firebase-login"),
+        Uri.parse("$backendUrl/api/auth/firebase-login"),
         headers: {
           "Content-Type": "application/json",
           "Authorization": "Bearer $token",
         },
         body: jsonEncode({
           "phone": "+91$phoneOnly",
-          "role": "driver", // ✅ required for backend to register as driver
+          "role": "driver",
         }),
       );
 
@@ -78,16 +82,50 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
 
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
-        final isNewUser = data["newUser"] == true;
-        _showSuccess(isNewUser ? "Welcome, driver!" : "Welcome back!");
 
-        final driverId = data["user"]["phone"]; // or data["user"]["_id"]
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (_) => DriverDocumentUploadPage(driverId: driverId),
-          ),
-        );
+        final driverId = data["user"]["_id"]; // ✅ always use MongoDB _id
+        final isNewUser = data["newUser"] == true;
+
+        if (isNewUser) {
+          // 👉 New user, send to upload flow
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => DriverDocumentUploadPage(driverId: driverId),
+            ),
+          );
+        } else {
+          // 👉 Existing user, check document status
+          final docsRes = await http.get(
+            Uri.parse("$backendUrl/api/driver/documents/$driverId"),
+            headers: {"Authorization": "Bearer $token"},
+          );
+
+          if (docsRes.statusCode == 200) {
+            final docsData = json.decode(docsRes.body);
+            final docs = List<Map<String, dynamic>>.from(docsData["docs"]);
+            final allApproved = docs.isNotEmpty &&
+                docs.every((doc) => doc["status"] == "approved");
+
+            if (allApproved) {
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const DriverDashboardPage(driverId: '', vehicleType: '',),
+                ),
+              );
+            } else {
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => DocumentsReviewPage(driverId: driverId),
+                ),
+              );
+            }
+          } else {
+            _showError("Failed to fetch documents. ${docsRes.body}");
+          }
+        }
       } else {
         _showError("Login failed: ${res.body}");
       }
@@ -119,9 +157,8 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
         timeout: const Duration(seconds: 60),
         verificationCompleted: (PhoneAuthCredential credential) async {
           try {
-            final userCred = await FirebaseAuth.instance.signInWithCredential(
-              credential,
-            );
+            final userCred =
+                await FirebaseAuth.instance.signInWithCredential(credential);
             if (userCred.user != null) {
               _autoVerified = true;
               await _routeDriver(rawPhone);
@@ -172,9 +209,8 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
     );
 
     try {
-      final userCred = await FirebaseAuth.instance.signInWithCredential(
-        credential,
-      );
+      final userCred =
+          await FirebaseAuth.instance.signInWithCredential(credential);
       if (userCred.user == null) {
         throw Exception("Firebase user is null");
       }
@@ -220,17 +256,6 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
     );
   }
 
-  void _showSuccess(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message, textAlign: TextAlign.center),
-        backgroundColor: Colors.green[600],
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 2),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -251,10 +276,8 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
                 ),
               ),
               const SizedBox(height: 40),
-              const Text(
-                'Enter your mobile number',
-                style: TextStyle(fontSize: 18),
-              ),
+              const Text('Enter your mobile number',
+                  style: TextStyle(fontSize: 18)),
               const SizedBox(height: 10),
               TextField(
                 controller: _phoneController,

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:drivergoo/screens/documents_review_page.dart';
 import 'package:flutter/material.dart';
 import 'package:http_parser/http_parser.dart'; // ADD THIS
 import 'package:http/http.dart' as http;
@@ -26,7 +27,7 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
   File? profilePhoto;
   final picker = ImagePicker();
 
-  final String backendUrl = "http://192.168.190.33:5002";
+  final String backendUrl = "http://192.168.1.16:5002";
 
   Future<String?> getToken() async =>
       await FirebaseAuth.instance.currentUser!.getIdToken();
@@ -102,54 +103,57 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
     }
   }
 
-  Future<void> pickAndUpload(String docType) async {
-    final picked = await picker.pickImage(source: ImageSource.gallery);
-    if (picked == null) return;
+Future<void> pickAndUpload(String docType, String side, {bool fromCamera = false}) async {
+  final picked = await picker.pickImage(
+    source: fromCamera ? ImageSource.camera : ImageSource.gallery,
+  );
+  if (picked == null) return;
 
-    final file = File(picked.path);
-    setState(() => uploadedDocs[docType] = file);
+  final file = File(picked.path);
+  setState(() => uploadedDocs["${docType}_$side"] = file);
 
-    final ocrText = await extractTextFromImage(file);
-    final extracted = extractDocumentData(ocrText, docType);
+  final ocrText = await extractTextFromImage(file);
+  final extracted = extractDocumentData(ocrText, docType);
 
-    setState(() {
-      extractedDataMap[docType] = jsonEncode(extracted);
-    });
+  setState(() {
+    extractedDataMap["${docType}_$side"] = jsonEncode(extracted);
+  });
 
-    final uri = Uri.parse("$backendUrl/api/driver/uploadDocument");
-    final request = http.MultipartRequest("POST", uri);
+  final uri = Uri.parse("$backendUrl/api/driver/uploadDocument");
+  final request = http.MultipartRequest("POST", uri);
 
-    final token = await getToken();
-    request.headers['Authorization'] = 'Bearer $token';
-    String getMimeType(String path) {
-      final ext = path.toLowerCase();
-      if (ext.endsWith(".png")) return "image/png";
-      if (ext.endsWith(".jpg") || ext.endsWith(".jpeg")) return "image/jpeg";
-      return "application/octet-stream"; // fallback
-    }
+  final token = await getToken();
+  request.headers['Authorization'] = 'Bearer $token';
 
-    final mimeType = getMimeType(file.path);
-    request.files.add(
-      await http.MultipartFile.fromPath(
-        "document",
-        file.path,
-        contentType: MediaType.parse(mimeType),
-      ),
-    );
-    print("📤 Uploading: $docType, $vehicleType, $extracted");
-
-    request.fields['docType'] = docType;
-    request.fields['vehicleType'] = vehicleType!;
-    request.fields['extractedData'] = jsonEncode(extracted);
-
-    try {
-      final response = await request.send();
-      final res = await http.Response.fromStream(response);
-      print("✅ $docType upload response: ${res.body}");
-    } catch (e) {
-      print("❌ Upload failed: $e");
-    }
+  String getMimeType(String path) {
+    final ext = path.toLowerCase();
+    if (ext.endsWith(".png")) return "image/png";
+    if (ext.endsWith(".jpg") || ext.endsWith(".jpeg")) return "image/jpeg";
+    return "application/octet-stream"; // fallback
   }
+
+  final mimeType = getMimeType(file.path);
+  request.files.add(
+    await http.MultipartFile.fromPath(
+      "document",
+      file.path,
+      contentType: MediaType.parse(mimeType),
+    ),
+  );
+
+  request.fields['docType'] = docType;      // ✅ just license, aadhaar, etc.
+request.fields['docSide'] = side;         // ✅ send separately
+request.fields['vehicleType'] = vehicleType!;
+request.fields['extractedData'] = jsonEncode(extracted);
+
+  try {
+    final response = await request.send();
+    final res = await http.Response.fromStream(response);
+    print("✅ $docType ($side) upload response: ${res.body}");
+  } catch (e) {
+    print("❌ Upload failed: $e");
+  }
+}
 
   Future<void> uploadProfilePhoto() async {
     if (profilePhoto == null) return;
@@ -177,25 +181,19 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
     print("✅ Profile photo uploaded: ${res.body}");
   }
 
-  Widget buildDocBox(String docType) {
-    final file = uploadedDocs[docType];
+Widget buildDocBox(String docType) {
+  final frontFile = uploadedDocs["${docType}_front"];
+  final backFile = uploadedDocs["${docType}_back"];
+
+  Widget buildSide(String side, File? file) {
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          docType,
-          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-        ),
+        Text("$docType ($side)", style: const TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         file != null
             ? ClipRRect(
                 borderRadius: BorderRadius.circular(12),
-                child: Image.file(
-                  file,
-                  height: 160,
-                  width: double.infinity,
-                  fit: BoxFit.cover,
-                ),
+                child: Image.file(file, height: 160, width: double.infinity, fit: BoxFit.cover),
               )
             : Container(
                 height: 160,
@@ -207,14 +205,33 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
                 child: const Center(child: Text("No file selected")),
               ),
         const SizedBox(height: 8),
-        ElevatedButton(
-          onPressed: () => pickAndUpload(docType),
-          child: Text("Upload $docType"),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            ElevatedButton(
+              onPressed: () => pickAndUpload(docType, side, fromCamera: false),
+              child: const Text("Upload (Gallery)"),
+            ),
+            ElevatedButton(
+              onPressed: () => pickAndUpload(docType, side, fromCamera: true),
+              child: const Text("Take Photo"),
+            ),
+          ],
         ),
         const SizedBox(height: 16),
       ],
     );
   }
+
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      buildSide("front", frontFile),
+      buildSide("back", backFile),
+    ],
+  );
+}
+
 
   Widget buildStepContent() {
     if (vehicleType == null) {
@@ -292,27 +309,24 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
             child: const Text("Select Photo"),
           ),
           const SizedBox(height: 8),
-          ElevatedButton(
-            onPressed: uploadProfilePhoto,
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-            child: const Text("Finish"),
-          ),
+        ElevatedButton(
+  onPressed: () async {
+    await uploadProfilePhoto();
+
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (context) => DocumentsReviewPage(
+        ),
+      ),
+    );
+  },
+  style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+  child: const Text("Finish"),
+),
+
           const SizedBox(height: 8),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => DriverDashboardPage(
-                    driverId: widget.driverId,
-                    vehicleType: vehicleType!,
-                  ),
-                ),
-              );
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo),
-            child: const Text("Go to Dashboard"),
-          ),
+     
         ],
       );
     }
