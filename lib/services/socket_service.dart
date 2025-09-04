@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 
 class DriverSocketService {
@@ -6,10 +7,22 @@ class DriverSocketService {
   DriverSocketService._internal();
 
   late IO.Socket socket;
-
   bool _isConnected = false;
   String? _vehicleType;
 
+  Timer? _locationTimer;
+  double? _lastLat;
+  double? _lastLng;
+  String? _driverId;
+  bool _isOnline = true;
+  String? _fcmToken;
+
+  // ====== EVENT CALLBACKS ======
+  Function(Map<String, dynamic>)? onRideRequest;
+  Function(Map<String, dynamic>)? onRideConfirmed;
+  Function(Map<String, dynamic>)? onRideCancelled;
+
+  // ====== CONNECT SOCKET ======
   void connect(
     String driverId,
     double lat,
@@ -18,9 +31,12 @@ class DriverSocketService {
     bool isOnline = true,
     String? fcmToken,
   }) {
-    if (vehicleType != null) {
-      _vehicleType = vehicleType;
-    }
+    _driverId = driverId;
+    _vehicleType = vehicleType;
+    _isOnline = isOnline;
+    _fcmToken = fcmToken;
+    _lastLat = lat;
+    _lastLng = lng;
 
     socket = IO.io(
       'http://192.168.1.16:5002',
@@ -33,103 +49,94 @@ class DriverSocketService {
           .build(),
     );
 
-   socket.onConnect((_) {
-  print('🟢 Driver socket connected');
+    // On connect
+    socket.onConnect((_) {
+      print('🟢 Driver socket connected: ${socket.id}');
+      _isConnected = true;
 
-  // ✅ register driver online
-  socket.emit('registerDriver', {
-    'driverId': driverId,
-    'lat': lat,
-    'lng': lng,
-    'vehicleType': vehicleType,
-    'isOnline': true, // must be true
-    'fcmToken': fcmToken,
-  });
-});
-   socket.onConnect((_) {
-  print('✅ Socket connected: ${socket.id}');
-      _isConnected = false;
+      _emitDriverStatus(
+        _driverId!,
+        _isOnline,
+        _lastLat!,
+        _lastLng!,
+        _vehicleType ?? '',
+        fcmToken: _fcmToken,
+      );
+
+      _startLocationUpdates();
     });
 
+    // On disconnect
     socket.onDisconnect((_) {
       print('🔴 Socket disconnected');
       _isConnected = false;
+      _stopLocationUpdates();
     });
-socket.onReconnect((_) {
-  print('🔄 Socket reconnected: ${socket.id}');
 
+    // On reconnect
+    socket.onReconnect((_) {
+      print('🔄 Socket reconnected: ${socket.id}');
       _isConnected = true;
 
-      // re-register after reconnect
-      socket.emit('registerDriver', {
-        'driverId': driverId,
-        'lat': lat,
-        'lng': lng,
-        'vehicleType': _vehicleType,
-        'isOnline': isOnline,
-        'fcmToken': fcmToken,
-      });
+      _emitDriverStatus(
+        _driverId!,
+        _isOnline,
+        _lastLat!,
+        _lastLng!,
+        _vehicleType ?? '',
+        fcmToken: _fcmToken,
+      );
+
+      _startLocationUpdates();
     });
 
-    // Listen to all possible trip request event types
-    socket.on('newRideRequest', (data) {
-      print('📩 New ride request: $data');
-      if (onRideRequest != null) onRideRequest!(Map<String, dynamic>.from(data));
-    });
+    // Trip request listeners
+    socket.on('trip:request', (data) => _handleTripRequest(data));
+    socket.on('shortTripRequest', (data) => _handleTripRequest(data));
+    socket.on('parcelTripRequest', (data) => _handleTripRequest(data));
+    socket.on('longTripRequest', (data) => _handleTripRequest(data));
 
-    socket.on('trip:Request', (data) {
-      print('📩 Trip request: $data');
-      if (onRideRequest != null) onRideRequest!(Map<String, dynamic>.from(data));
-    });
-
-    socket.on('shortTripRequest', (data) {
-      print('📩 Short trip request: $data');
-      if (onRideRequest != null) onRideRequest!(Map<String, dynamic>.from(data));
-    });
-
-    socket.on('parcelTripRequest', (data) {
-      print('📩 Parcel trip request: $data');
-      if (onRideRequest != null) onRideRequest!(Map<String, dynamic>.from(data));
-    });
-
-    socket.on('longTripRequest', (data) {
-  print('📩 Long trip request: $data');
-  if (onRideRequest != null) onRideRequest!(Map<String, dynamic>.from(data));
-});
-
-    // Ride confirmed
+    // Trip lifecycle events
     socket.on('rideConfirmed', (data) {
       print('✅ Ride confirmed: $data');
-      if (onRideConfirmed != null) onRideConfirmed!(Map<String, dynamic>.from(data));
+      if (onRideConfirmed != null) {
+        onRideConfirmed!(Map<String, dynamic>.from(data));
+      }
     });
 
-    // Ride completed
-    socket.on('rideCompleted', (data) {
-      print('📥 Received ride completion confirmation: $data');
-    });
-
-    // Ride cancelled
     socket.on('rideCancelled', (data) {
-      print('📥 Received ride cancellation: $data');
+      print('🚫 Ride cancelled: $data');
+      if (onRideCancelled != null) {
+        onRideCancelled!(Map<String, dynamic>.from(data));
+      }
     });
   }
- void updateDriverLocation(String driverId, double lat, double lng) {
-    if (socket != null && socket!.connected) {
-      socket!.emit("updateDriverLocation", {
-        "driverId": driverId,
-        "lat": lat,
-        "lng": lng,
-      });
-      print("📡 Location update sent: $lat, $lng");
-    } else {
-      print("⚠️ Socket not connected, cannot send location");
-    }
+
+  // ====== AUTO LOCATION UPDATES ======
+  void _startLocationUpdates() {
+    _locationTimer?.cancel();
+    _locationTimer = Timer.periodic(const Duration(seconds: 10), (timer) {
+      if (_driverId != null && _lastLat != null && _lastLng != null) {
+        _emitDriverStatus(
+          _driverId!,
+          _isOnline,
+          _lastLat!,
+          _lastLng!,
+          _vehicleType ?? '',
+          fcmToken: _fcmToken,
+        );
+      }
+    });
+    print('📡 Started auto location updates every 10s');
   }
 
-  void dispose() {
-    socket?.disconnect();
+  void _stopLocationUpdates() {
+    _locationTimer?.cancel();
+    _locationTimer = null;
+    print('🛑 Stopped auto location updates');
   }
 
+  // ====== MANUAL DRIVER STATUS UPDATE ======
   void updateDriverStatus(
     String driverId,
     bool isOnline,
@@ -137,72 +144,101 @@ socket.onReconnect((_) {
     double lng,
     String vehicleType, {
     String? fcmToken,
+    bool acceptsShort = false,
+    bool acceptsParcel = false,
+    bool acceptsLong = false,
   }) {
-    print('🔄 Attempting to update driver status via socket: ${isOnline ? "Online" : "Offline"}');
-
     if (!_isConnected) {
       print('⚠️ Socket not connected, cannot update driver status');
       return;
     }
+    _driverId = driverId;
+    _isOnline = isOnline;
+    _lastLat = lat;
+    _lastLng = lng;
+    _vehicleType = vehicleType;
+    _fcmToken = fcmToken;
 
+    _emitDriverStatus(
+      driverId,
+      isOnline,
+      lat,
+      lng,
+      vehicleType,
+      fcmToken: fcmToken,
+      acceptsShort: acceptsShort,
+      acceptsParcel: acceptsParcel,
+      acceptsLong: acceptsLong,
+    );
+  }
+
+  void _emitDriverStatus(
+    String driverId,
+    bool isOnline,
+    double lat,
+    double lng,
+    String vehicleType, {
+    String? fcmToken,
+    bool acceptsShort = false,
+    bool acceptsParcel = false,
+    bool acceptsLong = false,
+  }) {
     final payload = {
       'driverId': driverId,
       'isOnline': isOnline,
       'vehicleType': vehicleType,
       'fcmToken': fcmToken,
+      'acceptsShort': acceptsShort,
+      'acceptsParcel': acceptsParcel,
+      'acceptsLong': acceptsLong,
       'location': {
         'type': 'Point',
-        'coordinates': [lng, lat], // ✅ GeoJSON order [lng, lat]
+        'coordinates': [lng, lat],
       },
     };
-
-    print('📤 Emitting updateDriverStatus with payload: $payload');
+    print('📤 Emitting updateDriverStatus: $payload');
     socket.emit('updateDriverStatus', payload);
-
-    print('📡 Driver status updated via socket: ${isOnline ? "Online" : "Offline"}');
   }
 
+  // ====== ACCEPT RIDE ======
   void acceptRide(String driverId, Map<String, dynamic> rideData) {
     if (!_isConnected) {
       print('⚠️ Socket not connected, cannot accept ride');
       return;
     }
-
-    final payload = {
-      'tripId': rideData['tripId'],
-      'driverId': driverId,
-    };
-
+    final payload = {'tripId': rideData['tripId'], 'driverId': driverId};
     print('📤 Emitting driver:accept_trip with payload: $payload');
     socket.emit('driver:accept_trip', payload);
   }
 
-  void rejectRide(String driverId, String rideId) {
-    if (!_isConnected) {
-      print('⚠️ Socket not connected, cannot reject ride');
-      return;
-    }
-
-    socket.emit('rideRejected', {'driverId': driverId, 'rideId': rideId});
+  // ====== REJECT RIDE ======
+  Future<void> rejectRide(String driverId, String rideId) async {
+    print('🚫 Placeholder: Call backend /api/trip/reject for rideId: $rideId');
   }
 
+  // ====== COMPLETE RIDE ======
+  Future<void> completeRide(String driverId, String rideId) async {
+    print('✅ Placeholder: Call backend /api/trip/complete for rideId: $rideId');
+  }
+
+  // ====== HANDLE TRIP REQUESTS ======
+  void _handleTripRequest(dynamic data) {
+    print('📩 Trip request: $data');
+    if (onRideRequest != null) {
+      onRideRequest!(Map<String, dynamic>.from(data));
+    }
+  }
+
+  // ====== DISCONNECT ======
   void disconnect() {
     print('🔄 Disconnecting socket manually');
     socket.disconnect();
+    _stopLocationUpdates();
     _isConnected = false;
     print('🔴 Socket disconnected manually');
   }
 
-  void completeRide(String driverId, String rideId) {
-    if (!_isConnected) {
-      print('⚠️ Socket not connected, cannot complete ride');
-      return;
-    }
-
-    socket.emit('rideCompleted', {'driverId': driverId, 'rideId': rideId});
-    print('📤 Emitted rideCompleted for ride: $rideId');
+  void dispose() {
+    disconnect();
   }
-
-  Function(Map<String, dynamic>)? onRideRequest;
-  Function(Map<String, dynamic>)? onRideConfirmed;
 }

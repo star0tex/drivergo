@@ -2,42 +2,38 @@ import 'package:http/http.dart' as http;
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:socket_io_client/socket_io_client.dart' as IO;
+
 import 'package:url_launcher/url_launcher.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:socket_io_client/socket_io_client.dart' as io;
-import 'package:drivergoo/services/socket_service.dart';
+import '../services/socket_service.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-
 
 class DriverDashboardPage extends StatefulWidget {
   final String driverId;
   final String vehicleType;
 
   const DriverDashboardPage({
-    super.key,
+    Key? key,
     required this.driverId,
     required this.vehicleType,
-  });
+  }) : super(key: key);
+
   @override
-  State<DriverDashboardPage> createState() => _DriverDashboardPageState();
+  _DriverDashboardPageState createState() => _DriverDashboardPageState();
 }
 
 class _DriverDashboardPageState extends State<DriverDashboardPage> {
-  
-    io.Socket? socket;
-
   final String apiBase = 'http://192.168.1.16:5002';
 
-
-  bool isOnDuty = false;
-  List<Map<String, dynamic>> rideRequests = []; // Queue of ride requests
-  Map<String, dynamic>? currentRide; // Currently displayed request
-  Map<String, dynamic>? confirmedRide; // Currently confirmed ride
+  bool isOnline = false;
+  bool acceptsLong = false;
+  List<Map<String, dynamic>> rideRequests = [];
+  Map<String, dynamic>? currentRide;
+  Map<String, dynamic>? confirmedRide;
 
   GoogleMapController? _googleMapController;
   late String driverId;
@@ -50,110 +46,83 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
   final Set<Polyline> _polylines = {};
   final AudioPlayer _audioPlayer = AudioPlayer();
   final DriverSocketService _socketService = DriverSocketService();
-  @override
-void initState() {
-  super.initState();
-  driverId = widget.driverId;
+  String? driverFcmToken;
 
-  // ✅ Ensure only one socket connection
-  _initDriverSocket();
+  @override
+  void initState() {
+    super.initState();
+    driverId = widget.driverId;
     _requestLocationPermission();
     _getCurrentLocation();
-  _requestLocationPermission();
-  _getCurrentLocation();
+    _initSocketAndFCM();
+  }
 
-  // Initially driver offline, will be set online after socket connects
-}
- Future<void> _initDriverSocket() async {
+  Future<void> _initSocketAndFCM() async {
+    driverFcmToken = await FirebaseMessaging.instance.getToken();
     final pos = await Geolocator.getCurrentPosition(
       desiredAccuracy: LocationAccuracy.high,
     );
+    setState(() {
+      _currentPosition = LatLng(pos.latitude, pos.longitude);
+    });
 
-    // Connect using singleton socket service
     _socketService.connect(
       driverId,
       pos.latitude,
       pos.longitude,
       vehicleType: widget.vehicleType,
-      isOnline: isOnDuty,
+      isOnline: isOnline,
+      fcmToken: driverFcmToken,
     );
 
-    // Listen for socket connection
-    _socketService.socket.onConnect((_) async {
-      print("✅ Socket connected: ${_socketService.socket.id}");
-      print("📍 Current location: ${pos.latitude}, ${pos.longitude}");
-
-      // Send driver status after socket connects
-      _socketService.updateDriverStatus(
-        driverId,
-        isOnDuty,
-        pos.latitude,
-        pos.longitude,
-        widget.vehicleType,
-      );
-
-      // Update location as well
-      _socketService.updateDriverLocation(
-        driverId,
-        pos.latitude,
-        pos.longitude,
-      );
-
-      print("📡 Driver is now Online and location sent");
-    });
-
-    _socketService.socket.onDisconnect((_) {
-      print("🔴 Socket disconnected");
-    });
-
-    _socketService.socket.onReconnect((_) {
-      print("🔄 Socket reconnected: ${_socketService.socket.id}");
-
-      // Re-send status/location on reconnect
-      _socketService.updateDriverStatus(
-        driverId,
-        isOnDuty,
-        pos.latitude,
-        pos.longitude,
-        widget.vehicleType,
-      );
-      _socketService.updateDriverLocation(
-        driverId,
-        pos.latitude,
-        pos.longitude,
-      );
-    });
-
-    // Set up ride request callback
-    _socketService.onRideRequest = _handleIncomingTrip;
-
-    // Set up ride confirmed callback
-    _socketService.onRideConfirmed = _handleRideConfirmation;
+    _socketService.onRideRequest = (data) {
+      print('📩 Incoming ride request: $data');
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('New ride request received!')));
+      }
+      _handleIncomingTrip(data);
+    };
+    _socketService.onRideConfirmed = (data) {
+      print('✅ Ride confirmed: $data');
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Ride confirmed!')));
+      }
+      _handleRideConfirmation(data);
+    };
+    _socketService.onRideCancelled = (data) {
+      print('❌ Ride cancelled: $data');
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Ride cancelled.')));
+      }
+    };
   }
-
-
-
- 
-  
-  
 
   void _handleIncomingTrip(dynamic data) {
     print("📥 Incoming trip: $data"); // Log to see what the backend sends
 
     // First check if driver is on duty
-    if (!isOnDuty) {
+    if (!isOnline) {
       print("❌ Ignored because driver is off duty");
       return;
     }
-    
+
     final request = Map<String, dynamic>.from(data);
-    
+
     // Compare vehicle types case-insensitively
-    String requestVehicleType = request['vehicleType']?.toString().toLowerCase() ?? '';
+    String requestVehicleType =
+        request['vehicleType']?.toString().toLowerCase() ?? '';
     String driverVehicleType = widget.vehicleType.toLowerCase();
-    
+
     if (requestVehicleType != driverVehicleType) {
-      print("🚫 Vehicle type mismatch. Expected: $driverVehicleType, Got: $requestVehicleType");
+      print(
+        "🚫 Vehicle type mismatch. Expected: $driverVehicleType, Got: $requestVehicleType",
+      );
       return;
     }
 
@@ -164,23 +133,23 @@ void initState() {
     });
     _playNotificationSound();
   }
-  
+
   void _handleRideConfirmation(dynamic data) {
     print("✅ Ride confirmation received: $data");
-    
+
     // First check if driver is on duty
-    if (!isOnDuty) {
+    if (!isOnline) {
       print("❌ Ignored confirmation because driver is off duty");
       return;
     }
-    
+
     final confirmation = Map<String, dynamic>.from(data);
-    
+
     // Update the confirmed ride state
     setState(() {
       confirmedRide = confirmation;
     });
-    
+
     // Show notification for the confirmed ride
     _showRideConfirmationNotification(confirmation);
   }
@@ -194,15 +163,17 @@ void initState() {
     // 🔔 Added
     await _audioPlayer.stop();
   }
-  
+
   void _showRideConfirmationNotification(Map<String, dynamic> confirmation) {
     // Play notification sound
     _playNotificationSound();
-    
+
     // Show a snackbar with the confirmation details
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Ride confirmed! ${confirmation['message'] ?? 'Customer has confirmed the ride.'}'),
+        content: Text(
+          'Ride confirmed! ${confirmation['message'] ?? 'Customer has confirmed the ride.'}',
+        ),
         backgroundColor: Colors.green,
         duration: const Duration(seconds: 5),
         action: SnackBarAction(
@@ -216,29 +187,42 @@ void initState() {
       ),
     );
   }
-  
+
   void _showRideConfirmationDetails(Map<String, dynamic> confirmation) {
     // Show a dialog with detailed information about the confirmed ride
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Ride Confirmed', style: TextStyle(color: Colors.green)),
+        title: const Text(
+          'Ride Confirmed',
+          style: TextStyle(color: Colors.green),
+        ),
         content: SingleChildScrollView(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text('Ride ID: ${confirmation['rideId'] ?? confirmation['id'] ?? 'N/A'}'),
+              Text(
+                'Ride ID: ${confirmation['rideId'] ?? confirmation['id'] ?? 'N/A'}',
+              ),
               const SizedBox(height: 8),
-              Text('Customer: ${confirmation['userName'] ?? confirmation['customerName'] ?? 'N/A'}'),
+              Text(
+                'Customer: ${confirmation['userName'] ?? confirmation['customerName'] ?? 'N/A'}',
+              ),
               const SizedBox(height: 8),
-              Text('Pickup: ${_getAddressFromConfirmation(confirmation, 'pickup')}'),
+              Text(
+                'Pickup: ${_getAddressFromConfirmation(confirmation, 'pickup')}',
+              ),
               const SizedBox(height: 8),
-              Text('Destination: ${_getAddressFromConfirmation(confirmation, 'drop')}'),
+              Text(
+                'Destination: ${_getAddressFromConfirmation(confirmation, 'drop')}',
+              ),
               const SizedBox(height: 8),
               Text('Payment: ${confirmation['paymentMethod'] ?? 'Cash'}'),
               const SizedBox(height: 8),
-              Text('Amount: ₹${confirmation['fare'] ?? confirmation['amount'] ?? 'N/A'}'),
+              Text(
+                'Amount: ₹${confirmation['fare'] ?? confirmation['amount'] ?? 'N/A'}',
+              ),
             ],
           ),
         ),
@@ -260,8 +244,11 @@ void initState() {
       ),
     );
   }
-  
-  String _getAddressFromConfirmation(Map<String, dynamic> confirmation, String type) {
+
+  String _getAddressFromConfirmation(
+    Map<String, dynamic> confirmation,
+    String type,
+  ) {
     if (confirmation[type] != null) {
       if (confirmation[type] is Map) {
         return confirmation[type]['address'] ?? 'N/A';
@@ -271,45 +258,53 @@ void initState() {
     }
     return 'N/A';
   }
-  
+
   void _handleConfirmedRide(Map<String, dynamic> confirmation) {
     // Update the map with the confirmed ride details
     // This could include drawing a route to the pickup location
     try {
       // Extract pickup location from confirmation
       double? pickupLat, pickupLng;
-      
+
       if (confirmation['pickup'] is Map) {
-        pickupLat = double.tryParse(confirmation['pickup']['lat']?.toString() ?? '') ?? 
-                   double.tryParse(confirmation['pickup']['latitude']?.toString() ?? '');
-        pickupLng = double.tryParse(confirmation['pickup']['lng']?.toString() ?? '') ?? 
-                   double.tryParse(confirmation['pickup']['longitude']?.toString() ?? '');
+        pickupLat =
+            double.tryParse(confirmation['pickup']['lat']?.toString() ?? '') ??
+            double.tryParse(
+              confirmation['pickup']['latitude']?.toString() ?? '',
+            );
+        pickupLng =
+            double.tryParse(confirmation['pickup']['lng']?.toString() ?? '') ??
+            double.tryParse(
+              confirmation['pickup']['longitude']?.toString() ?? '',
+            );
       }
-      
+
       if (pickupLat != null && pickupLng != null) {
         // Set customer pickup location
         _customerPickup = LatLng(pickupLat, pickupLng);
-        
+
         // Draw route to customer
         _drawRouteToCustomer();
-        
+
         // Start location updates
         _startLiveLocationUpdates();
-        
+
         // Show action buttons for the confirmed ride
         _showRideActionButtons(confirmation);
-        
+
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Navigating to pickup location')),
         );
       } else {
-        print('❌ Could not extract pickup location from confirmation: $confirmation');
+        print(
+          '❌ Could not extract pickup location from confirmation: $confirmation',
+        );
       }
     } catch (e) {
       print('❌ Error handling confirmed ride: $e');
     }
   }
-  
+
   void _showRideActionButtons(Map<String, dynamic> confirmation) {
     // Show a bottom sheet with ride action buttons
     showModalBottomSheet(
@@ -358,7 +353,7 @@ void initState() {
       ),
     );
   }
-  
+
   void _completeRide(Map<String, dynamic> confirmation) {
     try {
       final String rideId = confirmation['_id'] ?? confirmation['id'] ?? '';
@@ -366,53 +361,53 @@ void initState() {
         print('❌ Cannot complete ride: Missing ride ID');
         return;
       }
-      
+
       // Get driver ID from the socket service
       final String? driverId = widget.driverId;
       if (driverId == null || driverId.isEmpty) {
         print('❌ Cannot complete ride: Missing driver ID');
         return;
       }
-      
+
       // Call the socket service to complete the ride
       _socketService.completeRide(driverId, rideId);
       print('✅ Called completeRide with driverId: $driverId, rideId: $rideId');
-      
+
       // Clear the confirmed ride from state
       _clearConfirmedRide();
-      
+
       // Clear the route and markers
       _clearRouteAndMarkers();
-      
+
       // Show success message
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Ride completed successfully')),
       );
     } catch (e) {
       print('❌ Error completing ride: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Failed to complete ride')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Failed to complete ride')));
     }
   }
-  
+
   void _cancelRide(Map<String, dynamic> confirmation) {
     try {
       // Clear the confirmed ride from state
       _clearConfirmedRide();
-      
+
       // Clear the route and markers
       _clearRouteAndMarkers();
-      
+
       // Show message
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Ride cancelled')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Ride cancelled')));
     } catch (e) {
       print('❌ Error cancelling ride: $e');
     }
   }
-  
+
   void _clearRouteAndMarkers() {
     setState(() {
       _polylines.clear();
@@ -420,7 +415,7 @@ void initState() {
       _customerPickup = null;
     });
   }
-  
+
   void _clearConfirmedRide() {
     setState(() {
       confirmedRide = null;
@@ -504,14 +499,16 @@ void initState() {
     if (currentRide == null) return;
 
     _stopNotificationSound();
-    
+
     // Use the socket service to accept the ride
     _socketService.acceptRide(
       driverId,
       currentRide!['userId'] ?? currentRide!['customerId'],
     );
 
-    await _fetchCustomerPickupLocation(currentRide!['userId'] ?? currentRide!['customerId']);
+    await _fetchCustomerPickupLocation(
+      currentRide!['userId'] ?? currentRide!['customerId'],
+    );
     await _drawRouteToCustomer();
     _startLiveLocationUpdates();
 
@@ -528,15 +525,12 @@ void initState() {
   void _startLiveLocationUpdates() {
     _locationUpdateTimer?.cancel();
     _locationUpdateTimer = Timer.periodic(const Duration(seconds: 5), (
-      _,
+      timer,
     ) async {
-      if (currentRide == null) return;
+      if (_currentPosition == null) return;
       final pos = await Geolocator.getCurrentPosition();
-
-      // Use the socket service to update driver location
-     _socketService.updateDriverStatus(driverId, true, pos.latitude, pos.longitude, widget.vehicleType);
-
-
+      _currentPosition = LatLng(pos.latitude, pos.longitude);
+      _updateDriverStatusSocket();
       _sendLocationToBackend(pos.latitude, pos.longitude);
     });
   }
@@ -615,7 +609,7 @@ void initState() {
     );
 
     List<LatLng> polylinePoints = [];
-    
+
     try {
       final response = await http.get(url);
       if (response.statusCode != 200) {
@@ -628,7 +622,7 @@ void initState() {
         print("❌ No routes found: ${data['status']}");
         return;
       }
-      
+
       final encodedPolyline = data['routes'][0]['overview_polyline']['points'];
       polylinePoints = _decodePolyline(encodedPolyline);
     } catch (e) {
@@ -697,10 +691,8 @@ void initState() {
   void dispose() {
     _locationUpdateTimer?.cancel();
     _mapController?.dispose();
-    _socketService.disconnect(); // Disconnect the socket service
+    _socketService.disconnect();
     _stopNotificationSound();
-      socket?.disconnect();
-    
     super.dispose();
   }
 
@@ -734,17 +726,17 @@ void initState() {
         title: Row(
           children: [
             Text(
-              isOnDuty ? "ON DUTY" : "OFF DUTY",
+              isOnline ? "ON DUTY" : "OFF DUTY",
               style: const TextStyle(color: Colors.black),
             ),
             Switch(
-              value: isOnDuty,
+              value: isOnline,
               activeColor: Colors.green,
               inactiveThumbColor: Colors.red,
               onChanged: (value) async {
-                print("🔄 Toggle switch changed to: ${value ? 'Online' : 'Offline'}");
-                setState(() => isOnDuty = value);
-                print("✅ _registerDriver completed with status: ${isOnDuty ? 'Online' : 'Offline'}");
+                setState(() => isOnline = value);
+                if (!isOnline) acceptsLong = false;
+                _updateDriverStatusSocket();
               },
             ),
           ],
@@ -756,13 +748,9 @@ void initState() {
           SizedBox(width: 10),
         ],
       ),
-
       body: Stack(
         children: [
-          // Show map or off-duty UI
-          isOnDuty ? buildGoogleMap() : buildOffDutyUI(),
-          
-          // Show confirmed ride banner if available
+          isOnline ? buildGoogleMap() : buildOffDutyUI(),
           if (confirmedRide != null)
             Positioned(
               top: 0,
@@ -770,7 +758,10 @@ void initState() {
               right: 0,
               child: Container(
                 color: Colors.green.withOpacity(0.9),
-                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+                padding: const EdgeInsets.symmetric(
+                  vertical: 8,
+                  horizontal: 16,
+                ),
                 child: Row(
                   children: [
                     const Icon(Icons.check_circle, color: Colors.white),
@@ -778,7 +769,10 @@ void initState() {
                     Expanded(
                       child: Text(
                         'Ride confirmed: ${_getAddressFromConfirmation(confirmedRide!, "pickup")}',
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
                     IconButton(
@@ -793,11 +787,7 @@ void initState() {
                 ),
               ),
             ),
-
-          // Show ride request card if available
           if (currentRide != null) buildRideRequestCard(),
-
-          // Show bottom sheet with "Go to Pickup" if pickup location is set
           if (_pickupLocation != null)
             Positioned(
               bottom: 0,
@@ -1039,15 +1029,64 @@ void initState() {
               ),
             ),
           ),
-          ListTile(
-            title: const Text("On-Ride Booking"),
-            trailing: Switch(
-              value: isOnDuty,
-              onChanged: (value) => setState(() => isOnDuty = value),
+          // Long Trip Toggle (only for car)
+          if (widget.vehicleType.toLowerCase() == 'car')
+            ListTile(
+              title: const Text("Accept Long Trips"),
+              trailing: Switch(
+                value: acceptsLong,
+                onChanged: isOnline
+                    ? (value) {
+                        setState(() => acceptsLong = value);
+                        _updateDriverStatusSocket();
+                      }
+                    : null,
+              ),
             ),
-          ),
         ],
       ),
+    );
+  }
+
+  void _updateDriverStatusSocket() {
+    // Trip type rules
+    final vehicle = widget.vehicleType.toLowerCase();
+    bool acceptsShort = false;
+    bool acceptsParcel = false;
+    bool acceptsLongTrip = false;
+
+    if (isOnline) {
+      if (vehicle == 'auto') {
+        acceptsShort = true;
+        acceptsParcel = false;
+        acceptsLongTrip = false;
+      } else if (vehicle == 'bike') {
+        acceptsShort = true;
+        acceptsParcel = true;
+        acceptsLongTrip = false;
+      } else if (vehicle == 'car') {
+        acceptsShort = true;
+        acceptsParcel = false;
+        acceptsLongTrip = acceptsLong;
+      }
+    }
+
+    final lat = _currentPosition?.latitude ?? 0.0;
+    final lng = _currentPosition?.longitude ?? 0.0;
+
+    _socketService.updateDriverStatus(
+      driverId,
+      isOnline,
+      lat,
+      lng,
+      widget.vehicleType,
+      fcmToken: driverFcmToken,
+      acceptsShort: acceptsShort,
+      acceptsParcel: acceptsParcel,
+      acceptsLong: acceptsLongTrip,
+    );
+    print(
+      '🔄 updateDriverStatus: online=$isOnline, short=$acceptsShort, parcel=$acceptsParcel, long=$acceptsLongTrip',
     );
   }
 
