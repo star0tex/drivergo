@@ -27,7 +27,7 @@ class DriverDashboardPage extends StatefulWidget {
 }
 
 class _DriverDashboardPageState extends State<DriverDashboardPage> {
-  final String apiBase = 'http://192.168.1.16:5002';
+  final String apiBase = 'http://192.168.1.12:5002';
 
   bool isOnline = false;
   bool acceptsLong = false;
@@ -56,83 +56,240 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     _getCurrentLocation();
     _initSocketAndFCM();
   }
-
+ double? _parseDouble(dynamic v) {
+    if (v == null) return null;
+    if (v is double) return v;
+    if (v is int) return v.toDouble();
+    if (v is num) return v.toDouble();
+    if (v is String) {
+      final s = v.trim();
+      if (s.isEmpty) return null;
+      return double.tryParse(s);
+    }
+    return null;
+  }
   Future<void> _initSocketAndFCM() async {
-    driverFcmToken = await FirebaseMessaging.instance.getToken();
-    final pos = await Geolocator.getCurrentPosition(
-      desiredAccuracy: LocationAccuracy.high,
-    );
-    setState(() {
-      _currentPosition = LatLng(pos.latitude, pos.longitude);
-    });
+  driverFcmToken = await FirebaseMessaging.instance.getToken();
+  final pos = await Geolocator.getCurrentPosition(
+    desiredAccuracy: LocationAccuracy.high,
+  );
+  setState(() {
+    _currentPosition = LatLng(pos.latitude, pos.longitude);
+  });
 
-    _socketService.connect(
-      driverId,
-      pos.latitude,
-      pos.longitude,
-      vehicleType: widget.vehicleType,
-      isOnline: isOnline,
-      fcmToken: driverFcmToken,
-    );
+  _socketService.connect(
+    driverId,
+    pos.latitude,
+    pos.longitude,
+    vehicleType: widget.vehicleType,
+    isOnline: isOnline,
+    fcmToken: driverFcmToken,
+  );
 
-    _socketService.onRideRequest = (data) {
-      print('📩 Incoming ride request: $data');
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('New ride request received!')));
-      }
-      _handleIncomingTrip(data);
-    };
-    _socketService.onRideConfirmed = (data) {
-      print('✅ Ride confirmed: $data');
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Ride confirmed!')));
-      }
-      _handleRideConfirmation(data);
-    };
-    _socketService.onRideCancelled = (data) {
-      print('❌ Ride cancelled: $data');
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Ride cancelled.')));
-      }
-    };
-  }
-
-  void _handleIncomingTrip(dynamic data) {
-    print("📥 Incoming trip: $data"); // Log to see what the backend sends
-
-    // First check if driver is on duty
-    if (!isOnline) {
-      print("❌ Ignored because driver is off duty");
-      return;
+  // ✅ FCM Foreground listener
+  FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+    print("📩 Foreground FCM received: ${message.data}");
+    if (message.data.containsKey('tripId')) {
+      _playNotificationSound(); // 🔔 Play custom sound
+      _handleIncomingTrip(message.data);
     }
+  });
 
-    final request = Map<String, dynamic>.from(data);
+  // ✅ FCM when tapped from tray (background/terminated)
+  // ✅ FCM Foreground listener
+FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+  print("📩 Foreground FCM received: ${message.data}");
 
-    // Compare vehicle types case-insensitively
-    String requestVehicleType =
-        request['vehicleType']?.toString().toLowerCase() ?? '';
-    String driverVehicleType = widget.vehicleType.toLowerCase();
-
-    if (requestVehicleType != driverVehicleType) {
-      print(
-        "🚫 Vehicle type mismatch. Expected: $driverVehicleType, Got: $requestVehicleType",
-      );
-      return;
+  // Normalize FCM data
+  final Map<String, dynamic> tripData = message.data.map((key, value) {
+    try {
+      return MapEntry(key, jsonDecode(value));
+    } catch (e) {
+      return MapEntry(key, value); // keep as string if not JSON
     }
+  });
 
-    // Process the ride request
-    setState(() {
-      rideRequests.add(request);
-      currentRide = rideRequests.isNotEmpty ? rideRequests.first : null;
-    });
+  if (tripData.containsKey('tripId')) {
     _playNotificationSound();
+    _handleIncomingTrip(tripData);
   }
+});
+
+// ✅ FCM when tapped from tray (background/terminated)
+FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+  print("📩 Notification tapped: ${message.data}");
+
+  // Normalize FCM data
+  final Map<String, dynamic> tripData = message.data.map((key, value) {
+    try {
+      return MapEntry(key, jsonDecode(value));
+    } catch (e) {
+      return MapEntry(key, value);
+    }
+  });
+
+  if (tripData.containsKey('tripId')) {
+    _playNotificationSound();
+    _handleIncomingTrip(tripData);
+  }
+});
+
+  // 🔌 Socket listeners
+  _socketService.socket.on('trip:request', (data) {
+    print("📥 trip:request received: $data");
+    _playNotificationSound(); // 🔔 Play custom sound
+    _handleIncomingTrip(data);
+  });
+
+  _socketService.socket.on('tripRequest', (data) {
+    print("📥 tripRequest received: $data (legacy)");
+    _playNotificationSound(); // 🔔 Play custom sound
+    _handleIncomingTrip(data);
+  });
+
+  _socketService.onRideConfirmed = (data) {
+    print('✅ Ride confirmed: $data');
+    if (mounted) {
+      _playNotificationSound(); // 🔔 Play on confirmation too
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Ride confirmed!')));
+    }
+    _handleRideConfirmation(data);
+  };
+
+  _socketService.onRideCancelled = (data) {
+    print('❌ Ride cancelled: $data');
+    if (mounted) {
+      _playNotificationSound(); // 🔔 Alert on cancel
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Ride cancelled.')));
+    }
+  };
+}
+
+void _handleIncomingTrip(dynamic rawData) {
+  print("📥 Raw incoming trip: $rawData");
+
+  Map<String, dynamic> request;
+
+  try {
+    if (rawData is String) {
+      request = jsonDecode(rawData) as Map<String, dynamic>;
+    } else if (rawData is Map) {
+      request = Map<String, dynamic>.from(rawData);
+    } else {
+      print("❌ Unsupported trip data format: $rawData");
+      return;
+    }
+
+    // ✅ Normalize pickup/drop
+    if (request['pickup'] is String) {
+      request['pickup'] = jsonDecode(request['pickup']);
+    }
+    if (request['drop'] is String) {
+      request['drop'] = jsonDecode(request['drop']);
+    }
+  } catch (e) {
+    print("❌ Failed to parse trip data: $e");
+    return;
+  }
+
+  print("✅ Normalized trip request: $request");
+
+  if (!isOnline) {
+    print("❌ Ignored because driver is off duty");
+    return;
+  }
+
+  String requestVehicleType =
+      (request['vehicleType'] ?? '').toString().toLowerCase().trim();
+  String driverVehicleType = widget.vehicleType.toLowerCase().trim();
+
+  if (requestVehicleType != driverVehicleType) {
+    print("🚫 Vehicle type mismatch. Expected: $driverVehicleType, Got: $requestVehicleType");
+    return;
+  }
+
+  setState(() {
+    rideRequests.add(request);
+    currentRide = rideRequests.isNotEmpty ? rideRequests.first : null;
+  });
+
+  _playNotificationSound();
+  _showIncomingTripPopup(request); // <-- safe now
+}
+void _showIncomingTripPopup(Map<String, dynamic> request) {
+  showModalBottomSheet(
+    context: context,
+    isDismissible: false,
+    backgroundColor: Colors.white,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+    ),
+    builder: (context) {
+      return Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: const [
+                Icon(Icons.local_taxi, color: Colors.blue, size: 28),
+                SizedBox(width: 10),
+                Text(
+                  "New Ride Request",
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Text("Pickup: ${request['pickup']?['address'] ?? ''}",
+                style: const TextStyle(fontSize: 16)),
+            Text("Drop: ${request['drop']?['address'] ?? ''}",
+                style: const TextStyle(fontSize: 16)),
+            const SizedBox(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.cancel),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 28, vertical: 12),
+                  ),
+                  onPressed: () {
+                    Navigator.pop(context);
+                    rejectRide();
+                  },
+                  label: const Text("Reject"),
+                ),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.check_circle),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 28, vertical: 12),
+                  ),
+                  onPressed: () {
+                    Navigator.pop(context);
+                    acceptRide();
+                  },
+                  label: const Text("Accept"),
+                ),
+              ],
+            ),
+          ],
+        ),
+      );
+    },
+  );
+}
+
 
   void _handleRideConfirmation(dynamic data) {
     print("✅ Ride confirmation received: $data");
@@ -443,7 +600,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     final idToken = await user.getIdToken(); // Firebase ID token
 
     final response = await http.post(
-      Uri.parse('http://192.168.1.16:5002/api/driver/login'),
+      Uri.parse('http://192.168.1.12:5002/api/driver/login'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
         'firebaseIdToken': idToken,
@@ -715,338 +872,470 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     });
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      drawer: buildDrawer(),
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.black),
-        title: Row(
-          children: [
-            Text(
-              isOnline ? "ON DUTY" : "OFF DUTY",
-              style: const TextStyle(color: Colors.black),
-            ),
-            Switch(
-              value: isOnline,
-              activeColor: Colors.green,
-              inactiveThumbColor: Colors.red,
-              onChanged: (value) async {
-                setState(() => isOnline = value);
-                if (!isOnline) acceptsLong = false;
-                _updateDriverStatusSocket();
-              },
-            ),
-          ],
-        ),
-        actions: const [
-          Icon(Icons.location_on_outlined, color: Colors.black),
-          SizedBox(width: 10),
-          Icon(Icons.notifications_none, color: Colors.black),
-          SizedBox(width: 10),
+@override
+Widget build(BuildContext context) {
+  return Scaffold(
+    drawer: buildDrawer(),
+    appBar: AppBar(
+      backgroundColor: Colors.white,
+      elevation: 1,
+      iconTheme: const IconThemeData(color: Colors.black),
+      title: Row(
+        children: [
+          Text(
+            isOnline ? "ON DUTY" : "OFF DUTY",
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: isOnline ? Colors.blue : Colors.red,
+                ),
+          ),
+          const SizedBox(width: 10),
+          Switch(
+            value: isOnline,
+            activeColor: Colors.blue,
+            inactiveThumbColor: Colors.grey,
+            onChanged: (value) async {
+              setState(() => isOnline = value);
+              if (!isOnline) acceptsLong = false;
+              _updateDriverStatusSocket();
+            },
+          ),
         ],
       ),
-      body: Stack(
-        children: [
-          isOnline ? buildGoogleMap() : buildOffDutyUI(),
-          if (confirmedRide != null)
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: Container(
-                color: Colors.green.withOpacity(0.9),
-                padding: const EdgeInsets.symmetric(
-                  vertical: 8,
-                  horizontal: 16,
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.check_circle, color: Colors.white),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'Ride confirmed: ${_getAddressFromConfirmation(confirmedRide!, "pickup")}',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.location_on_outlined, color: Colors.black),
+          onPressed: () {},
+        ),
+        IconButton(
+          icon: const Icon(Icons.notifications_none, color: Colors.black),
+          onPressed: () {},
+        ),
+        const SizedBox(width: 10),
+      ],
+    ),
+    body: Stack(
+      children: [
+        isOnline ? buildGoogleMap() : buildOffDutyUI(),
+        if (confirmedRide != null)
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.blue.shade600.withOpacity(0.95),
+                borderRadius:
+                    const BorderRadius.vertical(bottom: Radius.circular(12)),
+                boxShadow: const [
+                  BoxShadow(color: Colors.black26, blurRadius: 6)
+                ],
+              ),
+              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
+              child: Row(
+                children: [
+                  const Icon(Icons.check_circle, color: Colors.white),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Ride confirmed: ${_getAddressFromConfirmation(confirmedRide!, "pickup")}',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.navigation, color: Colors.white),
-                      onPressed: () => _handleConfirmedRide(confirmedRide!),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.close, color: Colors.white),
-                      onPressed: _clearConfirmedRide,
-                    ),
-                  ],
-                ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.navigation, color: Colors.white),
+                    onPressed: () => _handleConfirmedRide(confirmedRide!),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white),
+                    onPressed: _clearConfirmedRide,
+                  ),
+                ],
               ),
             ),
-          if (currentRide != null) buildRideRequestCard(),
-          if (_pickupLocation != null)
-            Positioned(
-              bottom: 0,
-              left: 0,
-              right: 0,
-              child: Container(
-                padding: const EdgeInsets.all(16),
-                decoration: const BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-                  boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10)],
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text(
-                      "Navigate to Customer Pickup Location",
+          ),
+        if (currentRide != null) buildRideRequestCard(),
+        if (_pickupLocation != null)
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+                boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10)],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    "Navigate to Customer Pickup Location",
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.black87,
+                        ),
+                  ),
+                  const SizedBox(height: 10),
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 24, vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    onPressed: () {
+                      final lat = _pickupLocation!.latitude;
+                      final lng = _pickupLocation!.longitude;
+                      final googleMapsUrl =
+                          "https://www.google.com/maps/dir/?api=1&destination=$lat,$lng&travelmode=driving";
+                      launchUrl(
+                        Uri.parse(googleMapsUrl),
+                        mode: LaunchMode.externalApplication,
+                      );
+                    },
+                    child: const Text(
+                      "Go to Pickup",
                       style: TextStyle(
-                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
+    ),
+  );
+}
+Widget buildGoogleMap() {
+  LatLng center = _currentPosition != null
+      ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
+      : const LatLng(17.385044, 78.486671); // fallback Hyderabad
+
+  return GoogleMap(
+    initialCameraPosition: CameraPosition(
+      target: center,
+      zoom: 14,
+    ),
+    myLocationEnabled: true,
+    myLocationButtonEnabled: true,
+    zoomControlsEnabled: false,
+    markers: {
+      if (_pickupLocation != null)
+        Marker(
+          markerId: const MarkerId("pickup"),
+          position: LatLng(
+            _pickupLocation!.latitude,
+            _pickupLocation!.longitude,
+          ),
+          infoWindow: const InfoWindow(title: "Pickup"),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
+        ),
+      if (currentRide != null && currentRide!['drop'] != null)
+  Marker(
+    markerId: const MarkerId("drop"),
+    position: LatLng(
+      _parseDouble(currentRide!['drop']['lat']) ?? 0.0,
+      _parseDouble(currentRide!['drop']['lng']) ?? 0.0,
+    ),
+    infoWindow: InfoWindow(
+      title: currentRide!['drop']['address'] ?? "Drop",
+    ),
+    icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+  ),
+
+    },
+    onMapCreated: (controller) {
+      _googleMapController = controller;
+    },
+  );
+}
+
+Widget buildRideRequestCard() {
+  if (currentRide == null) return const SizedBox();
+
+  return Align(
+    alignment: Alignment.bottomCenter,
+    child: Card(
+      margin: const EdgeInsets.all(16),
+      elevation: 6,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.local_taxi, color: Colors.blue),
+                const SizedBox(width: 8),
+                Text(
+                  "New Ride Request",
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87,
+                      ),
+                ),
+                const Spacer(),
+                if (rideRequests.isNotEmpty)
+                  CircleAvatar(
+                    radius: 12,
+                    backgroundColor: Colors.red,
+                    child: Text(
+                      "${rideRequests.length + 1}",
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.white,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    const SizedBox(height: 10),
-                    ElevatedButton(
-                      onPressed: () {
-                        final lat = _pickupLocation!.latitude;
-                        final lng = _pickupLocation!.longitude;
-                        final googleMapsUrl =
-                            "https://www.google.com/maps/dir/?api=1&destination=$lat,$lng&travelmode=driving";
-                        launchUrl(
-                          Uri.parse(googleMapsUrl),
-                          mode: LaunchMode.externalApplication,
-                        );
-                      },
-                      child: const Text("Go to Pickup"),
-                    ),
-                  ],
-                ),
-              ),
+                  ),
+              ],
             ),
-        ],
+            const SizedBox(height: 12),
+            Text(
+              "Pickup: ${currentRide!['pickup']['address'] ?? ''}",
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+            Text(
+              "Drop: ${currentRide!['drop']['address'] ?? ''}",
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 16),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 28, vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  onPressed: rejectRide,
+                  child: const Text("Reject"),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 28, vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  onPressed: acceptRide,
+                  child: const Text("Accept"),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
-    );
-  }
+    ),
+  );
+}
 
-  Widget buildRideRequestCard() {
-    if (currentRide == null) return const SizedBox();
+Widget buildOffDutyUI() {
+  return ListView(
+    padding: const EdgeInsets.all(16),
+    children: [
+      buildEarningsCard(),
+      const SizedBox(height: 16),
+      buildPerformanceCard(),
+      const SizedBox(height: 30),
+      Image.asset('assets/mobile.png', height: 140),
+      const SizedBox(height: 20),
+      Center(
+        child: Text(
+          "Start the engine, chase the earnings!",
+          style: Theme.of(context).textTheme.bodyMedium,
+        ),
+      ),
+      const SizedBox(height: 10),
+      Center(
+        child: Text(
+          "Go ON DUTY to start earning",
+          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+              ),
+        ),
+      ),
+    ],
+  );
+}
 
-    return Align(
-      alignment: Alignment.bottomCenter,
-      child: Card(
-        margin: const EdgeInsets.all(16),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
+Widget buildDrawer() {
+  return Drawer(
+    child: ListView(
+      padding: EdgeInsets.zero,
+      children: [
+        DrawerHeader(
+          decoration: BoxDecoration(
+            color: Colors.blue.shade600,
+          ),
+          child: Row(
             children: [
-              Row(
-                children: [
-                  const Icon(Icons.directions_bike, color: Colors.indigo),
-                  const SizedBox(width: 8),
-                  const Text(
-                    "New Ride Request",
-                    style: TextStyle(fontWeight: FontWeight.bold),
+              const CircleAvatar(
+                backgroundImage: AssetImage('assets/profile.jpg'),
+                radius: 30,
+              ),
+              const SizedBox(width: 10),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: const [
+                  Text(
+                    "My Profile",
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
                   ),
-                  const Spacer(),
-                  // Ride request count badge
-                  if (rideRequests.isNotEmpty)
-                    CircleAvatar(
-                      radius: 12,
-                      backgroundColor: Colors.red,
-                      child: Text(
-                        "${rideRequests.length + 1}",
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Colors.white,
-                        ),
-                      ),
+                  Text(
+                    "-- ⭐",
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.white70,
                     ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              Text(
-                "Pickup: ${currentRide!['pickup']['address'] ?? ''}",
-                style: const TextStyle(fontSize: 16),
-              ),
-              Text(
-                "Drop: ${currentRide!['drop']['address'] ?? ''}",
-                style: const TextStyle(fontSize: 16),
-              ),
-              const SizedBox(height: 16),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.red,
-                      shape: const RoundedRectangleBorder(
-                        borderRadius: BorderRadius.all(Radius.circular(8)),
-                      ),
-                    ),
-                    onPressed: rejectRide,
-                    child: const Text("Reject"),
-                  ),
-                  ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.green,
-                      shape: const RoundedRectangleBorder(
-                        borderRadius: BorderRadius.all(Radius.circular(8)),
-                      ),
-                    ),
-                    onPressed: acceptRide,
-                    child: const Text("Accept"),
                   ),
                 ],
+              ),
+              const Spacer(),
+              OutlinedButton(
+                onPressed: () {},
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Colors.white),
+                  shape: const StadiumBorder(),
+                ),
+                child: const Text(
+                  "Best",
+                  style: TextStyle(color: Colors.white),
+                ),
               ),
             ],
           ),
         ),
-      ),
-    );
-  }
 
-  Widget buildGoogleMap() {
-    return GoogleMap(
-      onMapCreated: (controller) => _googleMapController = controller,
-      initialCameraPosition: CameraPosition(
-        target: _currentPosition ?? const LatLng(0, 0),
-        zoom: 14,
-      ),
-      myLocationEnabled: true,
-      myLocationButtonEnabled: true,
-      markers: _markers,
-      polylines: _polylines,
-    );
-  }
-
-  Widget buildOffDutyUI() {
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        buildEarningsCard(),
-        const SizedBox(height: 16),
-        buildPerformanceCard(),
-        const SizedBox(height: 30),
-        Image.asset('assets/mobile.png', height: 140),
-        const SizedBox(height: 20),
-        const Center(child: Text("Start the engine, chase the earnings!")),
-        const SizedBox(height: 10),
-        const Center(
-          child: Text(
-            "Go ON DUTY to start earning",
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-          ),
+        // Earnings
+        buildDrawerItem(
+          Icons.account_balance_wallet,
+          "Earnings",
+          "Transfer Money to Bank, History",
+          iconColor: Colors.blue.shade600,
         ),
-      ],
-    );
-  }
+        buildDrawerItem(
+          Icons.attach_money,
+          "Incentives and More",
+          "Know how you get paid",
+          iconColor: Colors.blue.shade600,
+        ),
+        buildDrawerItem(
+          Icons.card_giftcard,
+          "Rewards",
+          "Insurance and Discounts",
+          iconColor: Colors.blue.shade600,
+        ),
 
-  Widget buildDrawer() {
-    return Drawer(
-      child: ListView(
-        padding: EdgeInsets.zero,
-        children: [
-          DrawerHeader(
-            decoration: const BoxDecoration(color: Colors.white),
+        const Divider(),
+
+        buildDrawerItem(
+          Icons.view_module,
+          "Service Manager",
+          "Food Delivery & more",
+          iconColor: Colors.blue.shade600,
+        ),
+        buildDrawerItem(
+          Icons.map,
+          "Demand Planner",
+          "Past High Demand Areas",
+          iconColor: Colors.blue.shade600,
+        ),
+        buildDrawerItem(
+          Icons.headset_mic,
+          "Help",
+          "Support, Accident Insurance",
+          iconColor: Colors.blue.shade600,
+        ),
+
+        // Refer friends
+        Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.blue.shade50,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
             child: Row(
               children: [
-                const CircleAvatar(
-                  backgroundImage: AssetImage('assets/profile.jpg'),
-                  radius: 30,
+                const Icon(Icons.emoji_people, color: Colors.blue),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    "Refer friends & Earn up to ₹",
+                    style: TextStyle(fontWeight: FontWeight.w500),
+                  ),
                 ),
-                const SizedBox(width: 10),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: const [
-                    Text("My Profile", style: TextStyle(fontSize: 18)),
-                    Text("-- ⭐", style: TextStyle(fontSize: 14)),
-                  ],
-                ),
-                const Spacer(),
-                OutlinedButton(
+                TextButton(
                   onPressed: () {},
-                  style: OutlinedButton.styleFrom(shape: const StadiumBorder()),
-                  child: const Text("Best"),
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.blue.shade700,
+                  ),
+                  child: const Text("Refer Now"),
                 ),
               ],
             ),
           ),
-          buildDrawerItem(
-            Icons.account_balance_wallet,
-            "Earnings",
-            "Transfer Money to Bank, History",
-          ),
-          buildDrawerItem(
-            Icons.attach_money,
-            "Incentives and More",
-            "Know how you get paid",
-          ),
-          buildDrawerItem(
-            Icons.card_giftcard,
-            "Rewards",
-            "Insurance and Discounts",
-          ),
-          const Divider(),
-          buildDrawerItem(
-            Icons.view_module,
-            "Service Manager",
-            "Food Delivery & more",
-          ),
-          buildDrawerItem(
-            Icons.map,
-            "Demand Planner",
-            "Past High Demand Areas",
-          ),
-          buildDrawerItem(
-            Icons.headset_mic,
-            "Help",
-            "Support, Accident Insurance",
-          ),
-          Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Container(
-              decoration: BoxDecoration(
-                color: const Color(0xFFEFF5FF),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-              child: Row(
-                children: [
-                  const Icon(Icons.emoji_people, color: Colors.green),
-                  const SizedBox(width: 8),
-                  const Expanded(child: Text("Refer friends & Earn up to ₹")),
-                  TextButton(onPressed: () {}, child: const Text("Refer Now")),
-                ],
-              ),
+        ),
+
+        // Long Trip Toggle (only for car)
+        if (widget.vehicleType.toLowerCase() == 'car')
+          ListTile(
+            title: const Text("Accept Long Trips"),
+            trailing: Switch(
+              activeColor: Colors.blue,
+              value: acceptsLong,
+              onChanged: isOnline
+                  ? (value) {
+                      setState(() => acceptsLong = value);
+                      _updateDriverStatusSocket();
+                    }
+                  : null,
             ),
           ),
-          // Long Trip Toggle (only for car)
-          if (widget.vehicleType.toLowerCase() == 'car')
-            ListTile(
-              title: const Text("Accept Long Trips"),
-              trailing: Switch(
-                value: acceptsLong,
-                onChanged: isOnline
-                    ? (value) {
-                        setState(() => acceptsLong = value);
-                        _updateDriverStatusSocket();
-                      }
-                    : null,
-              ),
-            ),
-        ],
-      ),
-    );
-  }
+      ],
+    ),
+  );
+}
+
+Widget buildDrawerItem(
+  IconData icon,
+  String title,
+  String subtitle, {
+  Color iconColor = Colors.black54,
+}) {
+  return ListTile(
+    leading: Icon(icon, color: iconColor),
+    title: Text(title, style: const TextStyle(fontWeight: FontWeight.w500)),
+    subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
+    onTap: () {},
+  );
+}
 
   void _updateDriverStatusSocket() {
     // Trip type rules
@@ -1090,14 +1379,6 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     );
   }
 
-  Widget buildDrawerItem(IconData icon, String title, String subtitle) {
-    return ListTile(
-      leading: Icon(icon),
-      title: Text(title),
-      subtitle: Text(subtitle),
-      onTap: () {},
-    );
-  }
 
   Widget buildEarningsCard() {
     return Row(

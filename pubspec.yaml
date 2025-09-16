@@ -69,6 +69,8 @@ flutter:
   uses-material-design: true
   assets:
     - assets/images/background.png
+    - assets/sounds/notification.mp3
+
   
   # To add assets to your application, add an assets section, like this:
   # assets:

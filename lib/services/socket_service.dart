@@ -39,7 +39,7 @@ class DriverSocketService {
     _lastLng = lng;
 
     socket = IO.io(
-      'http://192.168.1.16:5002',
+      'http://192.168.1.12:5002',
       IO.OptionBuilder()
           .setTransports(['websocket'])
           .enableAutoConnect()
@@ -51,17 +51,17 @@ class DriverSocketService {
 
     // On connect
     socket.onConnect((_) {
-      print('🟢 Driver socket connected: ${socket.id}');
-      _isConnected = true;
-
-      _emitDriverStatus(
-        _driverId!,
-        _isOnline,
-        _lastLat!,
-        _lastLng!,
-        _vehicleType ?? '',
-        fcmToken: _fcmToken,
-      );
+  print("Socket connected: ${socket.id}");
+  socket.emit('updateDriverStatus', {
+    'driverId': driverId,
+    'isOnline': true,
+    'vehicleType': vehicleType,
+    'location': {
+      'type': 'Point',
+      'coordinates': [lng, lat]
+    },
+    'fcmToken': fcmToken
+  });
 
       _startLocationUpdates();
     });

@@ -27,7 +27,7 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
   File? profilePhoto;
   final picker = ImagePicker();
 
-  final String backendUrl = "http://192.168.1.16:5002";
+  final String backendUrl = "http://192.168.1.12:5002";
 
   Future<String?> getToken() async =>
       await FirebaseAuth.instance.currentUser!.getIdToken();

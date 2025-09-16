@@ -1,3 +1,4 @@
+
 import 'dart:convert';
 import 'package:drivergoo/screens/driver_details_page.dart';
 import 'package:drivergoo/screens/documents_review_page.dart';
@@ -24,94 +25,106 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
   bool _codeSent = false;
   bool _autoVerified = false;
 
-  final String backendUrl = "http://192.168.1.16:5002";
+  final String backendUrl = "http://192.168.1.12:5002";
 
-  Future<void> _routeDriver(String phoneOnly) async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      _showError("Login failed. Firebase user is null.");
-      return;
-    }
+Future<void> _routeDriver(String phoneOnly) async {
+  final user = FirebaseAuth.instance.currentUser;
+  if (user == null) {
+    _showError("Login failed. Firebase user is null.");
+    return;
+  }
 
-    _showLoadingDialog();
+  _showLoadingDialog();
 
-    String token = await user.getIdToken() ?? '';
-    if (token.isEmpty) {
-      Navigator.pop(context);
-      _showError("Token is empty.");
-      return;
-    }
+  String token = await user.getIdToken() ?? '';
+  if (token.isEmpty) {
+    Navigator.pop(context);
+    _showError("Token is empty.");
+    return;
+  }
 
-    int attempts = 0;
-    bool tokenValid = false;
+  int attempts = 0;
+  bool tokenValid = false;
 
-    while (attempts < 10) {
-      try {
-        final decoded = JwtDecoder.decode(token);
-        if (decoded.containsKey("phone_number") || decoded.containsKey("uid")) {
-          tokenValid = true;
-          break;
-        }
-      } catch (_) {}
-
-      await Future.delayed(const Duration(seconds: 1));
-      token = await user.getIdToken(true) ?? '';
-      attempts++;
-    }
-
-    if (!tokenValid) {
-      Navigator.pop(context);
-      _showError("Login failed. Please try again.");
-      return;
-    }
-
+  while (attempts < 10) {
     try {
-      final res = await http.post(
-        Uri.parse("$backendUrl/api/auth/firebase-login"),
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": "Bearer $token",
-        },
-        body: jsonEncode({
-          "phone": "+91$phoneOnly",
-          "role": "driver",
-        }),
-      );
+      final decoded = JwtDecoder.decode(token);
+      if (decoded.containsKey("phone_number") || decoded.containsKey("uid")) {
+        tokenValid = true;
+        break;
+      }
+    } catch (_) {}
 
-      Navigator.pop(context);
+    await Future.delayed(const Duration(seconds: 1));
+    token = await user.getIdToken(true) ?? '';
+    attempts++;
+  }
 
-      if (res.statusCode == 200) {
-        final data = json.decode(res.body);
+  if (!tokenValid) {
+    Navigator.pop(context);
+    _showError("Login failed. Please try again.");
+    return;
+  }
 
-        final driverId = data["user"]["_id"]; // ✅ always use MongoDB _id
-        final isNewUser = data["newUser"] == true;
+  try {
+    final res = await http.post(
+      Uri.parse("$backendUrl/api/auth/firebase-login"),
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer $token",
+      },
+      body: jsonEncode({
+        "phone": "+91$phoneOnly",
+        "role": "driver",
+      }),
+    );
 
-        if (isNewUser) {
-          // 👉 New user, send to upload flow
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (_) => DriverDocumentUploadPage(driverId: driverId),
-            ),
-          );
-        } else {
-          // 👉 Existing user, check document status
-          final docsRes = await http.get(
-            Uri.parse("$backendUrl/api/driver/documents/$driverId"),
+    Navigator.pop(context);
+
+    if (res.statusCode == 200) {
+      final data = json.decode(res.body);
+      final driverId = data["user"]["_id"]; // ✅ always use MongoDB _id
+      final isNewUser = data["newUser"] == true;
+
+      if (isNewUser) {
+        // 👉 New user, send to upload flow
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (_) => DriverDocumentUploadPage(driverId: driverId),
+          ),
+        );
+      } else {
+        // 👉 Existing user, check document status
+        final docsRes = await http.get(
+          Uri.parse("$backendUrl/api/driver/documents/$driverId"),
+          headers: {"Authorization": "Bearer $token"},
+        );
+
+        if (docsRes.statusCode == 200) {
+          final docsData = json.decode(docsRes.body);
+          final docs = List<Map<String, dynamic>>.from(docsData["docs"]);
+          final allApproved = docs.isNotEmpty &&
+              docs.every((doc) => doc["status"] == "approved");
+
+          // Get driver details including vehicle type
+          final driverDetailsRes = await http.get(
+            Uri.parse("$backendUrl/api/driver/$driverId"),
             headers: {"Authorization": "Bearer $token"},
           );
 
-          if (docsRes.statusCode == 200) {
-            final docsData = json.decode(docsRes.body);
-            final docs = List<Map<String, dynamic>>.from(docsData["docs"]);
-            final allApproved = docs.isNotEmpty &&
-                docs.every((doc) => doc["status"] == "approved");
+          if (driverDetailsRes.statusCode == 200) {
+            final driverDetails = json.decode(driverDetailsRes.body);
+            final vehicleType = driverDetails["vehicleType"] ?? "";
 
             if (allApproved) {
               Navigator.pushReplacement(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => const DriverDashboardPage(driverId: '', vehicleType: '',),
+                  builder: (_) => DriverDashboardPage(
+                    driverId: driverId,
+                    vehicleType: vehicleType,
+                  ),
                 ),
               );
             } else {
@@ -123,18 +136,20 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
               );
             }
           } else {
-            _showError("Failed to fetch documents. ${docsRes.body}");
+            _showError("Failed to fetch driver details. ${driverDetailsRes.body}");
           }
+        } else {
+          _showError("Failed to fetch documents. ${docsRes.body}");
         }
-      } else {
-        _showError("Login failed: ${res.body}");
       }
-    } catch (e) {
-      Navigator.pop(context);
-      _showError("Connection error: $e");
+    } else {
+      _showError("Login failed: ${res.body}");
     }
+  } catch (e) {
+    Navigator.pop(context);
+    _showError("Connection error: $e");
   }
-
+}
   Future<void> _sendOTP() async {
     await FirebaseAuth.instance.signOut();
     setState(() {
@@ -354,3 +369,4 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
     super.dispose();
   }
 }
+
