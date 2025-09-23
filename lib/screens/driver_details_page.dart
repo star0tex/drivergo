@@ -27,7 +27,7 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
   File? profilePhoto;
   final picker = ImagePicker();
 
-  final String backendUrl = "http://192.168.1.12:5002";
+  final String backendUrl = "http://192.168.1.28:5002";
 
   Future<String?> getToken() async =>
       await FirebaseAuth.instance.currentUser!.getIdToken();
@@ -246,18 +246,39 @@ Widget buildDocBox(String docType) {
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 10),
               child: ElevatedButton(
-                onPressed: () {
-                  setState(() => vehicleType = type);
-                  print("Current vehicle type: $vehicleType"); // 🔍 Add here
-                },
-                style: ElevatedButton.styleFrom(
-                  minimumSize: const Size(double.infinity, 50),
-                  backgroundColor: Colors.blue.shade800,
-                ),
-                child: Text(type.toUpperCase()),
-              ),
-            ),
-        ],
+              onPressed: () async {
+  setState(() => vehicleType = type);
+
+ final token = await getToken();
+        final uri = Uri.parse("$backendUrl/api/driver/setVehicleType");
+        try {
+          final res = await http.post(
+            uri,
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": "Bearer $token"
+            },
+            body: jsonEncode({
+              "vehicleType": type,  // bike | auto | car
+            }),
+          );
+
+          if (res.statusCode == 200) {
+            print("✅ Vehicle type registered for driver: $type");
+          } else {
+            print("❌ Failed to set vehicle type: ${res.body}");
+          }
+        } catch (e) {
+          print("🔥 Error setting vehicle type: $e");
+        }
+      },
+      style: ElevatedButton.styleFrom(
+        minimumSize: const Size(double.infinity, 50),
+        backgroundColor: Colors.blue.shade800,
+      ),
+      child: Text(type.toUpperCase()),
+    ),
+  ),       ],
       );
     } else if (currentStep < getRequiredDocs(vehicleType!).length) {
       final docType = getRequiredDocs(vehicleType!)[currentStep];

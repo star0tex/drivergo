@@ -2,7 +2,7 @@ import 'package:http/http.dart' as http;
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
-
+import '../services/driver_socket_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
@@ -27,7 +27,8 @@ class DriverDashboardPage extends StatefulWidget {
 }
 
 class _DriverDashboardPageState extends State<DriverDashboardPage> {
-  final String apiBase = 'http://192.168.1.12:5002';
+  final String apiBase = 'http://192.168.1.28:5002';
+  final DriverSocketService _socketService = DriverSocketService();
 
   bool isOnline = false;
   bool acceptsLong = false;
@@ -42,10 +43,12 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
   LatLng? _currentPosition;
   LatLng? _customerPickup;
   Timer? _locationUpdateTimer;
+  Timer? _cleanupTimer;
+  final Set<String> _seenTripIds = {};
+
   final Set<Marker> _markers = {};
   final Set<Polyline> _polylines = {};
   final AudioPlayer _audioPlayer = AudioPlayer();
-  final DriverSocketService _socketService = DriverSocketService();
   String? driverFcmToken;
 
   @override
@@ -55,6 +58,15 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     _requestLocationPermission();
     _getCurrentLocation();
     _initSocketAndFCM();
+    _cleanupTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
+    if (_seenTripIds.length > 100) {
+      // Keep only the most recent 50 trip IDs
+      final recentIds = _seenTripIds.toList().sublist(_seenTripIds.length - 50);
+      _seenTripIds.clear();
+      _seenTripIds.addAll(recentIds);
+      print("🧹 Cleaned up old trip IDs, kept ${_seenTripIds.length} recent ones");
+    }
+  });
   }
  double? _parseDouble(dynamic v) {
     if (v == null) return null;
@@ -68,7 +80,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     }
     return null;
   }
-  Future<void> _initSocketAndFCM() async {
+ Future<void> _initSocketAndFCM() async {
   driverFcmToken = await FirebaseMessaging.instance.getToken();
   final pos = await Geolocator.getCurrentPosition(
     desiredAccuracy: LocationAccuracy.high,
@@ -86,71 +98,76 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     fcmToken: driverFcmToken,
   );
 
-  // ✅ FCM Foreground listener
-  FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-    print("📩 Foreground FCM received: ${message.data}");
-    if (message.data.containsKey('tripId')) {
-      _playNotificationSound(); // 🔔 Play custom sound
-      _handleIncomingTrip(message.data);
-    }
-  });
-
-  // ✅ FCM when tapped from tray (background/terminated)
-  // ✅ FCM Foreground listener
-FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-  print("📩 Foreground FCM received: ${message.data}");
-
-  // Normalize FCM data
-  final Map<String, dynamic> tripData = message.data.map((key, value) {
-    try {
-      return MapEntry(key, jsonDecode(value));
-    } catch (e) {
-      return MapEntry(key, value); // keep as string if not JSON
-    }
-  });
-
-  if (tripData.containsKey('tripId')) {
-    _playNotificationSound();
-    _handleIncomingTrip(tripData);
-  }
-});
-
-// ✅ FCM when tapped from tray (background/terminated)
-FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
-  print("📩 Notification tapped: ${message.data}");
-
-  // Normalize FCM data
-  final Map<String, dynamic> tripData = message.data.map((key, value) {
-    try {
-      return MapEntry(key, jsonDecode(value));
-    } catch (e) {
-      return MapEntry(key, value);
-    }
-  });
-
-  if (tripData.containsKey('tripId')) {
-    _playNotificationSound();
-    _handleIncomingTrip(tripData);
-  }
-});
-
-  // 🔌 Socket listeners
+  // ✅ SOCKET is PRIMARY - handle trip requests immediately
   _socketService.socket.on('trip:request', (data) {
-    print("📥 trip:request received: $data");
-    _playNotificationSound(); // 🔔 Play custom sound
+    print("📥 [SOCKET-PRIMARY] trip:request received: $data");
+    _playNotificationSound();
     _handleIncomingTrip(data);
   });
 
   _socketService.socket.on('tripRequest', (data) {
-    print("📥 tripRequest received: $data (legacy)");
-    _playNotificationSound(); // 🔔 Play custom sound
+    print("📥 [SOCKET-PRIMARY] tripRequest received: $data (legacy)");
+    _playNotificationSound();
     _handleIncomingTrip(data);
+  });
+
+  // ✅ FCM is BACKUP - handle with delay to allow socket first
+  FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+    print("📩 [FCM-BACKUP] Foreground FCM received: ${message.data}");
+
+    // Add delay to allow socket to handle first (2 seconds)
+    Future.delayed(const Duration(seconds: 2), () {
+      // Check if this trip hasn't been handled by socket already
+      final tripId = message.data['tripId']?.toString();
+      if (tripId != null && !_seenTripIds.contains(tripId)) {
+        _playNotificationSound();
+        
+        // Normalize FCM data
+        final Map<String, dynamic> tripData = message.data.map((key, value) {
+          try {
+            return MapEntry(key, jsonDecode(value));
+          } catch (e) {
+            return MapEntry(key, value);
+          }
+        });
+        
+        _handleIncomingTrip(tripData);
+      } else if (tripId != null) {
+        print("⚠️ [FCM-BACKUP] Duplicate trip ignored (already handled by socket): $tripId");
+      }
+    });
+  });
+
+  // ✅ FCM when tapped from tray (background/terminated)
+  FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+    print("📩 [FCM-BACKUP] Notification tapped: ${message.data}");
+
+    // Add delay to prevent duplicates
+    Future.delayed(const Duration(seconds: 1), () {
+      final tripId = message.data['tripId']?.toString();
+      if (tripId != null && !_seenTripIds.contains(tripId)) {
+        _playNotificationSound();
+        
+        // Normalize FCM data
+        final Map<String, dynamic> tripData = message.data.map((key, value) {
+          try {
+            return MapEntry(key, jsonDecode(value));
+          } catch (e) {
+            return MapEntry(key, value);
+          }
+        });
+        
+        _handleIncomingTrip(tripData);
+      } else if (tripId != null) {
+        print("⚠️ [FCM-BACKUP] Duplicate trip ignored (already handled): $tripId");
+      }
+    });
   });
 
   _socketService.onRideConfirmed = (data) {
     print('✅ Ride confirmed: $data');
     if (mounted) {
-      _playNotificationSound(); // 🔔 Play on confirmation too
+      _playNotificationSound();
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('Ride confirmed!')));
     }
@@ -160,7 +177,7 @@ FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
   _socketService.onRideCancelled = (data) {
     print('❌ Ride cancelled: $data');
     if (mounted) {
-      _playNotificationSound(); // 🔔 Alert on cancel
+      _playNotificationSound();
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('Ride cancelled.')));
     }
@@ -184,15 +201,46 @@ void _handleIncomingTrip(dynamic rawData) {
 
     // ✅ Normalize pickup/drop
     if (request['pickup'] is String) {
-      request['pickup'] = jsonDecode(request['pickup']);
+      try {
+        request['pickup'] = jsonDecode(request['pickup']);
+      } catch (e) {
+        print("⚠️ Could not parse pickup as JSON: ${request['pickup']}");
+      }
     }
     if (request['drop'] is String) {
-      request['drop'] = jsonDecode(request['drop']);
+      try {
+        request['drop'] = jsonDecode(request['drop']);
+      } catch (e) {
+        print("⚠️ Could not parse drop as JSON: ${request['drop']}");
+      }
     }
   } catch (e) {
     print("❌ Failed to parse trip data: $e");
     return;
   }
+
+  // ✅ Extract trip ID for duplicate checking
+  final tripId = request['tripId']?.toString() ?? request['_id']?.toString();
+  if (tripId == null) {
+    print("❌ No tripId found in request");
+    return;
+  }
+
+  // ✅ STRONG DEDUPLICATION - Check if already in seen IDs or queue
+  final isDuplicate = _seenTripIds.contains(tripId) || 
+                     rideRequests.any((req) {
+                       final existingTripId = req['tripId']?.toString() ?? req['_id']?.toString();
+                       return existingTripId == tripId;
+                     });
+
+  if (isDuplicate) {
+    print("⚠️ Duplicate trip ignored: $tripId");
+    return;
+  }
+
+  // ✅ Add to seen trip IDs to prevent future duplicates
+  _seenTripIds.add(tripId);
+  print("✅ Added trip to seen IDs: $tripId");
 
   print("✅ Normalized trip request: $request");
 
@@ -216,8 +264,24 @@ void _handleIncomingTrip(dynamic rawData) {
   });
 
   _playNotificationSound();
-  _showIncomingTripPopup(request); // <-- safe now
+  _showIncomingTripPopup(request);
 }
+void _debugCurrentState() {
+  print("🔍 DEBUG - Current State:");
+  print("   Online: $isOnline");
+  print("   Current Ride: ${currentRide != null}");
+  print("   Confirmed Ride: ${confirmedRide != null}");
+  print("   Ride Requests in Queue: ${rideRequests.length}");
+  print("   Seen Trip IDs: ${_seenTripIds.length}");
+  
+  if (currentRide != null) {
+    final tripId = currentRide!['tripId']?.toString() ?? currentRide!['_id']?.toString();
+    print("   Current Trip ID: $tripId");
+  }
+}
+
+// Call this method when needed for debugging
+// _debugCurrentState();
 void _showIncomingTripPopup(Map<String, dynamic> request) {
   showModalBottomSheet(
     context: context,
@@ -600,7 +664,7 @@ void _showIncomingTripPopup(Map<String, dynamic> request) {
     final idToken = await user.getIdToken(); // Firebase ID token
 
     final response = await http.post(
-      Uri.parse('http://192.168.1.12:5002/api/driver/login'),
+      Uri.parse('http://192.168.1.28:5002/api/driver/login'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
         'firebaseIdToken': idToken,
@@ -652,34 +716,53 @@ void _showIncomingTripPopup(Map<String, dynamic> request) {
     });
   }
 
-  void acceptRide() async {
-    if (currentRide == null) return;
+void acceptRide() async {
+  if (currentRide == null) return;
 
-    _stopNotificationSound();
+  _stopNotificationSound();
 
-    // Use the socket service to accept the ride
-    _socketService.acceptRide(
-      driverId,
-      currentRide!['userId'] ?? currentRide!['customerId'],
-    );
-
-    await _fetchCustomerPickupLocation(
-      currentRide!['userId'] ?? currentRide!['customerId'],
-    );
-    await _drawRouteToCustomer();
-    _startLiveLocationUpdates();
-
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text("Ride Accepted!")));
-
-    setState(() {
-      currentRide = rideRequests.isNotEmpty ? rideRequests.removeAt(0) : null;
-      if (currentRide != null) _playNotificationSound();
-    });
+  print('✅ Driver accepting ride: ${currentRide!['tripId']}');
+  
+  // ✅ FIX: Use the correct tripId parameter name
+  final tripId = currentRide!['tripId'] ?? currentRide!['_id'];
+  if (tripId == null) {
+    print('❌ No tripId found in currentRide: $currentRide');
+    return;
   }
 
-  void _startLiveLocationUpdates() {
+  // ✅ FIX: Use proper socket emission with correct parameters
+  _socketService.socket.emit('driver:accept_trip', {
+    'tripId': tripId.toString(),
+    'driverId': driverId,
+  });
+
+  print('📤 Emitted driver:accept_trip event:');
+  print('   - tripId: $tripId');
+  print('   - driverId: $driverId');
+
+  // Fetch customer pickup location
+  final customerId = currentRide!['customerId'] ?? currentRide!['userId'];
+  if (customerId != null) {
+    await _fetchCustomerPickupLocation(customerId.toString());
+  }
+
+  // Draw navigation route
+  await _drawRouteToCustomer();
+
+  // Start sending driver live location updates
+  _startLiveLocationUpdates();
+
+  // Show confirmation to driver
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(content: Text("Ride Accepted!")),
+  );
+
+  // Remove current ride request from queue
+  setState(() {
+    currentRide = rideRequests.isNotEmpty ? rideRequests.removeAt(0) : null;
+    if (currentRide != null) _playNotificationSound();
+  });
+}  void _startLiveLocationUpdates() {
     _locationUpdateTimer?.cancel();
     _locationUpdateTimer = Timer.periodic(const Duration(seconds: 5), (
       timer,
@@ -698,11 +781,12 @@ void _showIncomingTripPopup(Map<String, dynamic> request) {
         Uri.parse('$apiBase/api/location/updateDriver'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'driverId': driverId,
-          'latitude': lat,
-          'longitude': lng,
-          'type': 'driver', // Changed from 'customer' to 'driver'
-        }),
+  'driverId': driverId,
+  'latitude': lat,
+  'longitude': lng,
+  'tripId': confirmedRide?['tripId'] ?? confirmedRide?['_id'], // ✅ send tripId if ride accepted
+}),
+
       );
 
       print("📍 Driver location sent: $lat, $lng");
@@ -844,14 +928,15 @@ void _showIncomingTripPopup(Map<String, dynamic> request) {
     );
   }
 
-  @override
-  void dispose() {
-    _locationUpdateTimer?.cancel();
-    _mapController?.dispose();
-    _socketService.disconnect();
-    _stopNotificationSound();
-    super.dispose();
-  }
+ @override
+void dispose() {
+  _cleanupTimer?.cancel();
+  _locationUpdateTimer?.cancel();
+  _mapController?.dispose();
+  _socketService.disconnect();
+  _stopNotificationSound();
+  super.dispose();
+}
 
   void rejectRide() {
     if (currentRide == null) return;
@@ -957,7 +1042,7 @@ Widget build(BuildContext context) {
               ),
             ),
           ),
-        if (currentRide != null) buildRideRequestCard(),
+        // ❌ REMOVED: if (currentRide != null) buildRideRequestCard(),
         if (_pickupLocation != null)
           Positioned(
             bottom: 0,
@@ -1337,49 +1422,33 @@ Widget buildDrawerItem(
   );
 }
 
-  void _updateDriverStatusSocket() {
-    // Trip type rules
-    final vehicle = widget.vehicleType.toLowerCase();
-    bool acceptsShort = false;
-    bool acceptsParcel = false;
-    bool acceptsLongTrip = false;
+ void _updateDriverStatusSocket() {
+  // Get complete profile data
+  final driverProfileData = {
+    'name': "Ramesh Kumar", // Replace with actual driver name
+    'photoUrl': "https://example.com/photo.jpg", // Replace with actual photo URL
+    'rating': 4.9,
+    'vehicleBrand': "Honda Activa", // Replace with actual vehicle
+    'vehicleNumber': "TS09AB1234", // Replace with actual number
+    'vehicleType': widget.vehicleType.toLowerCase(),
+    'phone': '+919876543210', // Add phone number
+  };
 
-    if (isOnline) {
-      if (vehicle == 'auto') {
-        acceptsShort = true;
-        acceptsParcel = false;
-        acceptsLongTrip = false;
-      } else if (vehicle == 'bike') {
-        acceptsShort = true;
-        acceptsParcel = true;
-        acceptsLongTrip = false;
-      } else if (vehicle == 'car') {
-        acceptsShort = true;
-        acceptsParcel = false;
-        acceptsLongTrip = acceptsLong;
-      }
-    }
+  final lat = _currentPosition?.latitude ?? 0.0;
+  final lng = _currentPosition?.longitude ?? 0.0;
 
-    final lat = _currentPosition?.latitude ?? 0.0;
-    final lng = _currentPosition?.longitude ?? 0.0;
+  _socketService.updateDriverStatus(
+    driverId,
+    isOnline,
+    lat,
+    lng,
+    widget.vehicleType,
+    fcmToken: driverFcmToken,
+    profileData: driverProfileData, // This ensures profile is sent to server
+  );
 
-    _socketService.updateDriverStatus(
-      driverId,
-      isOnline,
-      lat,
-      lng,
-      widget.vehicleType,
-      fcmToken: driverFcmToken,
-      acceptsShort: acceptsShort,
-      acceptsParcel: acceptsParcel,
-      acceptsLong: acceptsLongTrip,
-    );
-    print(
-      '🔄 updateDriverStatus: online=$isOnline, short=$acceptsShort, parcel=$acceptsParcel, long=$acceptsLongTrip',
-    );
-  }
-
-
+  print('📤 Driver profile sent: $driverProfileData');
+}
   Widget buildEarningsCard() {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,

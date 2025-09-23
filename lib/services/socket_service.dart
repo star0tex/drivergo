@@ -39,7 +39,7 @@ class DriverSocketService {
     _lastLng = lng;
 
     socket = IO.io(
-      'http://192.168.1.12:5002',
+      'http://192.168.1.28:5002',
       IO.OptionBuilder()
           .setTransports(['websocket'])
           .enableAutoConnect()
@@ -51,17 +51,18 @@ class DriverSocketService {
 
     // On connect
     socket.onConnect((_) {
-  print("Socket connected: ${socket.id}");
+  print("✅ Connected to socket: ${socket.id}");
+
   socket.emit('updateDriverStatus', {
     'driverId': driverId,
-    'isOnline': true,
-    'vehicleType': vehicleType,
+    'isOnline': isOnline,
     'location': {
-      'type': 'Point',
-      'coordinates': [lng, lat]
+      'coordinates': [lng, lat], // [longitude, latitude]
     },
-    'fcmToken': fcmToken
-  });
+    'fcmToken': fcmToken,
+    'vehicleType': vehicleType,
+});
+
 
       _startLocationUpdates();
     });
@@ -110,6 +111,16 @@ class DriverSocketService {
         onRideCancelled!(Map<String, dynamic>.from(data));
       }
     });
+        // ====== CUSTOMER LIVE LOCATION ======
+    socket.on('location:update_customer', (data) {
+      print("📍 Customer live location: $data");
+      // TODO: update customer marker on map
+      // You can call a callback if needed:
+      // if (onCustomerLocationUpdate != null) {
+      //   onCustomerLocationUpdate!(Map<String, dynamic>.from(data));
+      // }
+    });
+
   }
 
   // ====== AUTO LOCATION UPDATES ======
@@ -135,43 +146,69 @@ class DriverSocketService {
     _locationTimer = null;
     print('🛑 Stopped auto location updates');
   }
-
+Map<String, bool> _getCapabilities(String vehicleType) {
+  switch (vehicleType.toLowerCase()) {
+    case "bike":
+      return {
+        'acceptsShort': true,
+        'acceptsParcel': true,
+        'acceptsLong': false,
+      };
+    case "car":
+      return {
+        'acceptsShort': true,
+        'acceptsParcel': false,
+        'acceptsLong': true,
+      };
+    case "auto":
+      return {
+        'acceptsShort': true,
+        'acceptsParcel': false,
+        'acceptsLong': false,
+      };
+    default:
+      return {
+        'acceptsShort': false,
+        'acceptsParcel': false,
+        'acceptsLong': false,
+      };
+  }
+}
   // ====== MANUAL DRIVER STATUS UPDATE ======
   void updateDriverStatus(
-    String driverId,
-    bool isOnline,
-    double lat,
-    double lng,
-    String vehicleType, {
-    String? fcmToken,
-    bool acceptsShort = false,
-    bool acceptsParcel = false,
-    bool acceptsLong = false,
-  }) {
-    if (!_isConnected) {
-      print('⚠️ Socket not connected, cannot update driver status');
-      return;
-    }
-    _driverId = driverId;
-    _isOnline = isOnline;
-    _lastLat = lat;
-    _lastLng = lng;
-    _vehicleType = vehicleType;
-    _fcmToken = fcmToken;
-
-    _emitDriverStatus(
-      driverId,
-      isOnline,
-      lat,
-      lng,
-      vehicleType,
-      fcmToken: fcmToken,
-      acceptsShort: acceptsShort,
-      acceptsParcel: acceptsParcel,
-      acceptsLong: acceptsLong,
-    );
+  String driverId,
+  bool isOnline,
+  double lat,
+  double lng,
+  String vehicleType, { // Required parameters come first
+  // Optional named parameters are inside curly braces {}
+  String? fcmToken,
+  Map<String, dynamic>? profileData, // ✅ MOVED and now correctly defined as a named parameter
+}) {
+  if (!_isConnected) {
+    print('⚠️ Socket not connected, cannot update driver status');
+    return;
   }
+  
+  // Build the complete data payload to send to the server
+  final Map<String, dynamic> data = {
+    'driverId': driverId,
+    'isOnline': isOnline,
+    'location': {
+      'type': 'Point',
+      'coordinates': [lng, lat], // lng, lat order for the backend
+    },
+    'vehicleType': vehicleType,
+    'fcmToken': fcmToken,
+    'profileData': profileData, // ✅ ADDED: Now included in the data sent to the server
+  };
 
+  // This is a good practice to keep the payload clean
+  data.removeWhere((key, value) => value == null);
+
+  // Directly emit the event with the complete data
+  socket.emit('updateDriverStatus', data);
+}
   void _emitDriverStatus(
     String driverId,
     bool isOnline,
@@ -183,33 +220,42 @@ class DriverSocketService {
     bool acceptsParcel = false,
     bool acceptsLong = false,
   }) {
-    final payload = {
-      'driverId': driverId,
-      'isOnline': isOnline,
-      'vehicleType': vehicleType,
-      'fcmToken': fcmToken,
-      'acceptsShort': acceptsShort,
-      'acceptsParcel': acceptsParcel,
-      'acceptsLong': acceptsLong,
-      'location': {
-        'type': 'Point',
-        'coordinates': [lng, lat],
-      },
-    };
-    print('📤 Emitting updateDriverStatus: $payload');
+  final caps = _getCapabilities(vehicleType);
+
+final payload = {
+  'driverId': driverId,
+  'isOnline': isOnline,
+  'vehicleType': vehicleType,
+  'fcmToken': fcmToken,
+  'acceptsShort': caps['acceptsShort'],
+  'acceptsParcel': caps['acceptsParcel'],
+  'acceptsLong': caps['acceptsLong'],
+  'location': {
+    'type': 'Point',
+    'coordinates': [lng, lat],
+  },
+};
+print('📤 Emitting updateDriverStatus: $payload');
     socket.emit('updateDriverStatus', payload);
   }
 
   // ====== ACCEPT RIDE ======
-  void acceptRide(String driverId, Map<String, dynamic> rideData) {
-    if (!_isConnected) {
-      print('⚠️ Socket not connected, cannot accept ride');
-      return;
-    }
-    final payload = {'tripId': rideData['tripId'], 'driverId': driverId};
-    print('📤 Emitting driver:accept_trip with payload: $payload');
-    socket.emit('driver:accept_trip', payload);
+  // In your DriverSocketService class
+void acceptRide(String driverId, Map<String, dynamic> rideData) {
+  final tripId = rideData['tripId'] ?? rideData['_id'];
+  if (tripId == null) {
+    print('❌ No tripId found in rideData: $rideData');
+    return;
   }
+
+  print('📤 [DriverSocketService] Accepting trip: $tripId');
+  
+  socket.emit('driver:accept_trip', {
+    'tripId': tripId.toString(),
+    'driverId': driverId,
+  });
+}
+
 
   // ====== REJECT RIDE ======
   Future<void> rejectRide(String driverId, String rideId) async {
