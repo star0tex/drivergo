@@ -23,14 +23,11 @@ class DriverSocketService {
   Function(Map<String, dynamic>)? onRideCancelled;
 
   // ====== CONNECT SOCKET ======
-  void connect(
-    String driverId,
-    double lat,
-    double lng, {
-    String? vehicleType,
-    bool isOnline = true,
-    String? fcmToken,
-  }) {
+ void connect(String driverId, double lat, double lng, {
+  required String vehicleType, 
+  required bool isOnline,
+  String? fcmToken
+}) {
     _driverId = driverId;
     _vehicleType = vehicleType;
     _isOnline = isOnline;
@@ -39,7 +36,7 @@ class DriverSocketService {
     _lastLng = lng;
 
     socket = IO.io(
-      'http://192.168.1.28:5002',
+      'http://192.168.1.9:5002',
       IO.OptionBuilder()
           .setTransports(['websocket'])
           .enableAutoConnect()
@@ -51,18 +48,18 @@ class DriverSocketService {
 
     // On connect
     socket.onConnect((_) {
-  print("✅ Connected to socket: ${socket.id}");
+      print("✅ Connected to socket: ${socket.id}");
+      _isConnected = true;
 
-  socket.emit('updateDriverStatus', {
-    'driverId': driverId,
-    'isOnline': isOnline,
-    'location': {
-      'coordinates': [lng, lat], // [longitude, latitude]
-    },
-    'fcmToken': fcmToken,
-    'vehicleType': vehicleType,
-});
-
+      // Use consistent payload format with capabilities
+      _emitDriverStatus(
+        driverId,
+        isOnline,
+        lat,
+        lng,
+        vehicleType,
+        fcmToken: fcmToken,
+      );
 
       _startLocationUpdates();
     });
@@ -91,6 +88,11 @@ class DriverSocketService {
       _startLocationUpdates();
     });
 
+    // Add status confirmation listener
+    socket.on('driver:statusUpdated', (data) {
+      print('✅ Server confirmed driver status: $data');
+    });
+
     // Trip request listeners
     socket.on('trip:request', (data) => _handleTripRequest(data));
     socket.on('shortTripRequest', (data) => _handleTripRequest(data));
@@ -111,16 +113,13 @@ class DriverSocketService {
         onRideCancelled!(Map<String, dynamic>.from(data));
       }
     });
-        // ====== CUSTOMER LIVE LOCATION ======
+
+    // ====== CUSTOMER LIVE LOCATION ======
     socket.on('location:update_customer', (data) {
       print("📍 Customer live location: $data");
-      // TODO: update customer marker on map
-      // You can call a callback if needed:
-      // if (onCustomerLocationUpdate != null) {
-      //   onCustomerLocationUpdate!(Map<String, dynamic>.from(data));
-      // }
     });
 
+    // Remove duplicate emission at the end of connect method
   }
 
   // ====== AUTO LOCATION UPDATES ======
@@ -146,69 +145,68 @@ class DriverSocketService {
     _locationTimer = null;
     print('🛑 Stopped auto location updates');
   }
-Map<String, bool> _getCapabilities(String vehicleType) {
-  switch (vehicleType.toLowerCase()) {
-    case "bike":
-      return {
-        'acceptsShort': true,
-        'acceptsParcel': true,
-        'acceptsLong': false,
-      };
-    case "car":
-      return {
-        'acceptsShort': true,
-        'acceptsParcel': false,
-        'acceptsLong': true,
-      };
-    case "auto":
-      return {
-        'acceptsShort': true,
-        'acceptsParcel': false,
-        'acceptsLong': false,
-      };
-    default:
-      return {
-        'acceptsShort': false,
-        'acceptsParcel': false,
-        'acceptsLong': false,
-      };
+
+  Map<String, bool> _getCapabilities(String vehicleType) {
+    switch (vehicleType.toLowerCase()) {
+      case "bike":
+        return {
+          'acceptsShort': true,
+          'acceptsParcel': true,
+          'acceptsLong': false,
+        };
+      case "car":
+        return {
+          'acceptsShort': true,
+          'acceptsParcel': false,
+          'acceptsLong': true,
+        };
+      case "auto":
+        return {
+          'acceptsShort': true,
+          'acceptsParcel': false,
+          'acceptsLong': false,
+        };
+      default:
+        return {
+          'acceptsShort': false,
+          'acceptsParcel': false,
+          'acceptsLong': false,
+        };
+    }
   }
-}
+
   // ====== MANUAL DRIVER STATUS UPDATE ======
   void updateDriverStatus(
-  String driverId,
-  bool isOnline,
-  double lat,
-  double lng,
-  String vehicleType, { // Required parameters come first
-  // Optional named parameters are inside curly braces {}
-  String? fcmToken,
-  Map<String, dynamic>? profileData, // ✅ MOVED and now correctly defined as a named parameter
-}) {
-  if (!_isConnected) {
-    print('⚠️ Socket not connected, cannot update driver status');
-    return;
+    String driverId,
+    bool isOnline,
+    double lat,
+    double lng,
+    String vehicleType, {
+    String? fcmToken,
+    Map<String, dynamic>? profileData,
+  }) {
+    if (!_isConnected) {
+      print('⚠️ Socket not connected, cannot update driver status');
+      return;
+    }
+    
+    // Update internal state
+    _isOnline = isOnline;
+    _lastLat = lat;
+    _lastLng = lng;
+    
+    // Use the same consistent method for emitting status
+    _emitDriverStatus(
+      driverId,
+      isOnline,
+      lat,
+      lng,
+      vehicleType,
+      fcmToken: fcmToken,
+      profileData: profileData,
+    );
   }
-  
-  // Build the complete data payload to send to the server
-  final Map<String, dynamic> data = {
-    'driverId': driverId,
-    'isOnline': isOnline,
-    'location': {
-      'type': 'Point',
-      'coordinates': [lng, lat], // lng, lat order for the backend
-    },
-    'vehicleType': vehicleType,
-    'fcmToken': fcmToken,
-    'profileData': profileData, // ✅ ADDED: Now included in the data sent to the server
-  };
 
-  // This is a good practice to keep the payload clean
-  data.removeWhere((key, value) => value == null);
-
-  // Directly emit the event with the complete data
-  socket.emit('updateDriverStatus', data);
-}
   void _emitDriverStatus(
     String driverId,
     bool isOnline,
@@ -216,46 +214,50 @@ Map<String, bool> _getCapabilities(String vehicleType) {
     double lng,
     String vehicleType, {
     String? fcmToken,
+    Map<String, dynamic>? profileData,
     bool acceptsShort = false,
     bool acceptsParcel = false,
     bool acceptsLong = false,
   }) {
-  final caps = _getCapabilities(vehicleType);
+    final caps = _getCapabilities(vehicleType);
 
-final payload = {
-  'driverId': driverId,
-  'isOnline': isOnline,
-  'vehicleType': vehicleType,
-  'fcmToken': fcmToken,
-  'acceptsShort': caps['acceptsShort'],
-  'acceptsParcel': caps['acceptsParcel'],
-  'acceptsLong': caps['acceptsLong'],
-  'location': {
-    'type': 'Point',
-    'coordinates': [lng, lat],
-  },
-};
-print('📤 Emitting updateDriverStatus: $payload');
+    final payload = {
+      'driverId': driverId,
+      'isOnline': isOnline,
+      'vehicleType': vehicleType,
+      'fcmToken': fcmToken,
+      'acceptsShort': caps['acceptsShort'],
+      'acceptsParcel': caps['acceptsParcel'],
+      'acceptsLong': caps['acceptsLong'],
+      'location': {
+        'type': 'Point',
+        'coordinates': [lng, lat],
+      },
+      if (profileData != null) 'profileData': profileData,
+    };
+
+    // Remove null values
+    payload.removeWhere((key, value) => value == null);
+    
+    print('📤 Emitting updateDriverStatus - Online: $isOnline');
     socket.emit('updateDriverStatus', payload);
   }
 
   // ====== ACCEPT RIDE ======
-  // In your DriverSocketService class
-void acceptRide(String driverId, Map<String, dynamic> rideData) {
-  final tripId = rideData['tripId'] ?? rideData['_id'];
-  if (tripId == null) {
-    print('❌ No tripId found in rideData: $rideData');
-    return;
+  void acceptRide(String driverId, Map<String, dynamic> rideData) {
+    final tripId = rideData['tripId'] ?? rideData['_id'];
+    if (tripId == null) {
+      print('❌ No tripId found in rideData: $rideData');
+      return;
+    }
+
+    print('📤 [DriverSocketService] Accepting trip: $tripId');
+    
+    socket.emit('driver:accept_trip', {
+      'tripId': tripId.toString(),
+      'driverId': driverId,
+    });
   }
-
-  print('📤 [DriverSocketService] Accepting trip: $tripId');
-  
-  socket.emit('driver:accept_trip', {
-    'tripId': tripId.toString(),
-    'driverId': driverId,
-  });
-}
-
 
   // ====== REJECT RIDE ======
   Future<void> rejectRide(String driverId, String rideId) async {
@@ -275,12 +277,47 @@ void acceptRide(String driverId, Map<String, dynamic> rideData) {
     }
   }
 
+  // ====== GET CURRENT STATUS ======
+  bool get isOnline => _isOnline;
+  bool get isConnected => _isConnected;
+
+  // ====== UPDATE LOCATION ONLY ======
+  void updateLocation(double lat, double lng) {
+    _lastLat = lat;
+    _lastLng = lng;
+    
+    if (_isConnected && _driverId != null && _vehicleType != null) {
+      _emitDriverStatus(
+        _driverId!,
+        _isOnline,
+        lat,
+        lng,
+        _vehicleType!,
+        fcmToken: _fcmToken,
+      );
+    }
+  }
+
   // ====== DISCONNECT ======
   void disconnect() {
     print('🔄 Disconnecting socket manually');
+    
+    // Send offline status before disconnecting
+    if (_isConnected && _driverId != null && _lastLat != null && _lastLng != null) {
+      _emitDriverStatus(
+        _driverId!,
+        false, // Set to offline
+        _lastLat!,
+        _lastLng!,
+        _vehicleType ?? '',
+        fcmToken: _fcmToken,
+      );
+    }
+    
     socket.disconnect();
     _stopLocationUpdates();
     _isConnected = false;
+    _isOnline = false;
     print('🔴 Socket disconnected manually');
   }
 

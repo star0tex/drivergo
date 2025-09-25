@@ -25,7 +25,7 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
   bool _codeSent = false;
   bool _autoVerified = false;
 
-  final String backendUrl = "http://192.168.1.28:5002";
+  final String backendUrl = "http://192.168.1.9:5002";
 
 Future<void> _routeDriver(String phoneOnly) async {
   final user = FirebaseAuth.instance.currentUser;
@@ -74,6 +74,8 @@ Future<void> _routeDriver(String phoneOnly) async {
         "Authorization": "Bearer $token",
       },
       body: jsonEncode({
+            "idToken": token,                    // ✅ ADD: Send token in body too
+
         "phone": "+91$phoneOnly",
         "role": "driver",
       }),

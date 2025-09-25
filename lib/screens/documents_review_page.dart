@@ -19,7 +19,7 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
   bool isApproved = false;
   List<Map<String, dynamic>> documents = [];
   String? errorMessage;
-  final String backendUrl = "http://192.168.1.28:5002";
+  final String backendUrl = "http://192.168.1.9:5002";
 
   Future<String?> getToken() async {
     try {
