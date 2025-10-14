@@ -36,7 +36,7 @@ class DriverSocketService {
     _lastLng = lng;
 
     socket = IO.io(
-      'http://192.168.1.9:5002',
+      'https://cd4ec7060b0b.ngrok-free.app',
       IO.OptionBuilder()
           .setTransports(['websocket'])
           .enableAutoConnect()
@@ -121,7 +121,25 @@ class DriverSocketService {
 
     // Remove duplicate emission at the end of connect method
   }
+  void on(String event, Function(dynamic) handler) {
+    if (_isConnected) {
+      socket.on(event, handler);
+    }
+  }
 
+  /// Generic method to stop listening to an event
+  void off(String event) {
+    if (_isConnected) {
+      socket.off(event);
+    }
+  }
+
+  /// Generic method to emit an event
+  void emit(String event, dynamic data) {
+    if (_isConnected) {
+      socket.emit(event, data);
+    }
+  }
   // ====== AUTO LOCATION UPDATES ======
   void _startLocationUpdates() {
     _locationTimer?.cancel();
@@ -297,6 +315,68 @@ class DriverSocketService {
       );
     }
   }
+  // ====== NEW: GO TO PICKUP ======
+Future<void> goToPickup(String driverId, String tripId) async {
+  print('🚗 Going to pickup for trip: $tripId');
+  socket.emit('driver:going_to_pickup', {
+    'tripId': tripId,
+    'driverId': driverId,
+  });
+}
+
+// ====== NEW: START RIDE WITH OTP ======
+Future<void> startRideWithOTP(
+  String driverId, 
+  String tripId, 
+  String otp,
+  double driverLat,
+  double driverLng,
+) async {
+  print('▶️ Starting ride with OTP for trip: $tripId');
+  socket.emit('driver:start_ride', {
+    'tripId': tripId,
+    'driverId': driverId,
+    'otp': otp,
+    'driverLat': driverLat,
+    'driverLng': driverLng,
+  });
+}
+
+// ====== NEW: COMPLETE RIDE WITH VERIFICATION ======
+Future<void> completeRideWithVerification(
+  String driverId,
+  String tripId,
+  double driverLat,
+  double driverLng,
+) async {
+  print('🏁 Completing ride with verification for trip: $tripId');
+  socket.emit('driver:complete_ride', {
+    'tripId': tripId,
+    'driverId': driverId,
+    'driverLat': driverLat,
+    'driverLng': driverLng,
+  });
+}
+
+// ====== NEW: CONFIRM CASH COLLECTION ======
+Future<void> confirmCashCollection(String driverId, String tripId) async {
+  print('💰 Confirming cash collection for trip: $tripId');
+  socket.emit('driver:confirm_cash', {
+    'tripId': tripId,
+    'driverId': driverId,
+  });
+}
+
+// ====== SEND DRIVER LOCATION FOR LIVE TRACKING ======
+void sendDriverLocation(String tripId, double lat, double lng) {
+  if (_isConnected) {
+    socket.emit('driver:location', {
+      'tripId': tripId,
+      'latitude': lat,
+      'longitude': lng,
+    });
+  }
+}
 
   // ====== DISCONNECT ======
   void disconnect() {

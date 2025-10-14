@@ -2,7 +2,7 @@ import 'package:http/http.dart' as http;
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import '../services/driver_socket_service.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
@@ -11,6 +11,71 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../services/socket_service.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import '../screens/chat_page.dart';
+import 'wallet_page.dart';
+import 'package:flutter/services.dart'; // ✅ ADD THIS LINE
+
+// ✅ ADD YOUR THEME CLASSES HERE
+class AppColors {
+  static const Color primary = Color.fromARGB(255, 212, 120, 0);
+  static const Color background = Colors.white;
+  static const Color onSurface = Colors.black;
+  static const Color surface = Color(0xFFF5F5F5);
+  static const Color onPrimary = Colors.white;
+  static const Color onSurfaceSecondary = Colors.black54;
+  static const Color onSurfaceTertiary = Colors.black38;
+  static const Color divider = Color(0xFFEEEEEE);
+  static const Color success = Color.fromARGB(255, 0, 66, 3);
+  static const Color warning = Color(0xFFFFA000);
+  static const Color error = Color(0xFFD32F2F);
+}
+
+class AppTextStyles {
+  static TextStyle get heading1 => GoogleFonts.plusJakartaSans(
+        fontSize: 32,
+        fontWeight: FontWeight.w800,
+        color: AppColors.onSurface,
+        letterSpacing: -0.5,
+      );
+
+  static TextStyle get heading2 => GoogleFonts.plusJakartaSans(
+        fontSize: 24,
+        fontWeight: FontWeight.w700,
+        color: AppColors.onSurface,
+        letterSpacing: -0.3,
+      );
+
+  static TextStyle get heading3 => GoogleFonts.plusJakartaSans(
+        fontSize: 18,
+        fontWeight: FontWeight.w600,
+        color: AppColors.onSurface,
+      );
+
+  static TextStyle get body1 => GoogleFonts.plusJakartaSans(
+        fontSize: 16,
+        fontWeight: FontWeight.w500,
+        color: AppColors.onSurface,
+      );
+
+  static TextStyle get body2 => GoogleFonts.plusJakartaSans(
+        fontSize: 14,
+        fontWeight: FontWeight.w500,
+        color: AppColors.onSurfaceSecondary,
+      );
+
+  static TextStyle get caption => GoogleFonts.plusJakartaSans(
+        fontSize: 12,
+        fontWeight: FontWeight.w500,
+        color: AppColors.onSurfaceTertiary,
+        letterSpacing: 0.5,
+      );
+
+  static TextStyle get button => GoogleFonts.plusJakartaSans(
+        fontSize: 16,
+        fontWeight: FontWeight.w700,
+        color: AppColors.onSurface,
+      );
+}
 
 class DriverDashboardPage extends StatefulWidget {
   final String driverId;
@@ -27,14 +92,19 @@ class DriverDashboardPage extends StatefulWidget {
 }
 
 class _DriverDashboardPageState extends State<DriverDashboardPage> {
-  final String apiBase = 'http://192.168.1.9:5002';
+  final String apiBase = 'https://cd4ec7060b0b.ngrok-free.app';
   final DriverSocketService _socketService = DriverSocketService();
+  String ridePhase = 'none';
+  String? customerOtp;
+  TextEditingController otpController = TextEditingController();
+  double? finalFareAmount;
+  double? tripFareAmount;
 
   bool isOnline = false;
   bool acceptsLong = false;
   List<Map<String, dynamic>> rideRequests = [];
   Map<String, dynamic>? currentRide;
-  Map<String, dynamic>? confirmedRide;
+  Map<String, dynamic>? activeTripDetails;
 
   GoogleMapController? _googleMapController;
   late String driverId;
@@ -51,7 +121,10 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
   final AudioPlayer _audioPlayer = AudioPlayer();
   String? driverFcmToken;
   String? _activeTripId;
-
+  Map<String, dynamic>? walletData;
+bool isLoadingWallet = false;
+Map<String, dynamic>? todayEarnings;
+bool isLoadingToday = false;
   @override
   void initState() {
     super.initState();
@@ -59,6 +132,10 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     _requestLocationPermission();
     _getCurrentLocation();
     _initSocketAndFCM();
+      _fetchWalletData(); // ✅ ADD THIS LINE
+
+  _fetchTodayEarnings(); // ✅ ADD THIS
+
     _cleanupTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
       if (_seenTripIds.length > 100) {
         final recentIds = _seenTripIds.toList().sublist(_seenTripIds.length - 50);
@@ -69,18 +146,79 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     });
   }
 
-  double? _parseDouble(dynamic v) {
-    if (v == null) return null;
-    if (v is double) return v;
-    if (v is int) return v.toDouble();
-    if (v is num) return v.toDouble();
-    if (v is String) {
-      final s = v.trim();
-      if (s.isEmpty) return null;
-      return double.tryParse(s);
-    }
-    return null;
+ double? _parseDouble(dynamic v) {
+  if (v == null) return null;
+  if (v is double) return v;
+  if (v is int) return v.toDouble();
+  if (v is num) return v.toDouble();
+  if (v is String) {
+    final s = v.trim();
+    if (s.isEmpty) return null;
+    return double.tryParse(s);
   }
+  return null;
+}
+
+  double _calculateDistance(LatLng point1, LatLng point2) {
+    return Geolocator.distanceBetween(
+      point1.latitude,
+      point1.longitude,
+      point2.latitude,
+      point2.longitude,
+    );
+  }
+Future<void> _fetchTodayEarnings() async {
+  setState(() => isLoadingToday = true);
+  
+  try {
+    final response = await http.get(
+      Uri.parse('$apiBase/api/wallet/today/${widget.driverId}'),
+      headers: {'Content-Type': 'application/json'},
+    );
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      if (data['success'] && mounted) {
+        setState(() {
+          todayEarnings = data['todayStats'];
+          isLoadingToday = false;
+        });
+      }
+    } else {
+      setState(() => isLoadingToday = false);
+    }
+  } catch (e) {
+    print('❌ Error fetching today earnings: $e');
+    setState(() => isLoadingToday = false);
+  }
+}
+Future<void> _fetchWalletData() async {
+  setState(() => isLoadingWallet = true);
+  
+  try {
+    final response = await http.get(
+      Uri.parse('$apiBase/api/wallet/${widget.driverId}'),
+      headers: {'Content-Type': 'application/json'},
+    );
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      if (data['success'] && mounted) {
+        setState(() {
+          walletData = data['wallet'];
+          isLoadingWallet = false;
+        });
+        print('✅ Wallet data fetched: $walletData');
+      }
+    } else {
+      setState(() => isLoadingWallet = false);
+      print('⚠️ Wallet fetch failed: ${response.statusCode}');
+    }
+  } catch (e) {
+    print('❌ Error fetching wallet data: $e');
+    setState(() => isLoadingWallet = false);
+  }
+}
 
   Future<void> _sendLocationToBackend(double lat, double lng) async {
     try {
@@ -91,11 +229,10 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
           'driverId': driverId,
           'latitude': lat,
           'longitude': lng,
-          'tripId': _activeTripId, // <-- use active accepted trip
+          'tripId': _activeTripId,
         }),
       );
 
-      // Optional: also socket emit for instant updates
       _socketService.socket.emit('driver:location', {
         'tripId': _activeTripId,
         'latitude': lat,
@@ -124,10 +261,79 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
       fcmToken: driverFcmToken,
     );
 
-    // SOCKET is PRIMARY - handle trip requests immediately
+    _socketService.socket.on('trip:taken', (data) {
+      print("🚫 Trip taken by another driver: $data");
+      if (mounted) {
+        final takenTripId = data['tripId']?.toString();
+        
+        setState(() {
+          rideRequests.removeWhere((req) {
+            final id = (req['tripId'] ?? req['_id'])?.toString();
+            return id == takenTripId;
+          });
+          
+          currentRide = rideRequests.isNotEmpty ? rideRequests.first : null;
+        });
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Trip accepted by ${data['acceptedBy']}'),
+            backgroundColor: AppColors.warning,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        
+        _stopNotificationSound();
+      }
+    });
+
+    _socketService.socket.on('trip:confirmed_for_driver', (data) {
+      print("✅ [SOCKET-PRIMARY] trip:confirmed_for_driver received: $data");
+      if (mounted) {
+        setState(() {
+          activeTripDetails = data;
+          final lat = data['trip']['pickup']['lat'];
+          final lng = data['trip']['pickup']['lng'];
+          _customerPickup = LatLng(lat, lng);
+        });
+        _drawRouteToCustomer();
+        _startLiveLocationUpdates();
+      }
+    });
+
+    _socketService.socket.on('trip:otp_generated', (data) {
+      print("🔢 OTP Generated: $data");
+      if (mounted) {
+        setState(() {
+          customerOtp = data['otp']?.toString();
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('OTP sent to customer: ${data['otp']}')),
+        );
+      }
+    });
+
+    _socketService.socket.on('trip:ride_started', (data) {
+      print("🚗 Ride Started: $data");
+      if (mounted) {
+        setState(() {
+          ridePhase = 'going_to_drop';
+        });
+      }
+    });
+
+    _socketService.socket.on('trip:completed', (data) {
+      print("✅ Trip Completed: $data");
+      if (mounted) {
+        setState(() {
+          finalFareAmount = tripFareAmount ?? 0.0;
+          ridePhase = 'completed';
+        });
+      }
+    });
+
     _socketService.socket.on('trip:request', (data) {
       print("📥 [SOCKET-PRIMARY] trip:request received: $data");
-      _playNotificationSound();
       _handleIncomingTrip(data);
     });
 
@@ -137,15 +343,12 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
       _handleIncomingTrip(data);
     });
 
-    // FCM is BACKUP - handle with delay to allow socket first
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
       print("📩 [FCM-BACKUP] Foreground FCM received: ${message.data}");
 
       Future.delayed(const Duration(seconds: 2), () {
         final tripId = message.data['tripId']?.toString();
         if (tripId != null && !_seenTripIds.contains(tripId)) {
-          _playNotificationSound();
-
           final Map<String, dynamic> tripData = message.data.map((key, value) {
             try {
               return MapEntry(key, jsonDecode(value));
@@ -161,7 +364,6 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
       });
     });
 
-    // FCM when tapped from tray (background/terminated)
     FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
       print("📩 [FCM-BACKUP] Notification tapped: ${message.data}");
 
@@ -185,16 +387,6 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
       });
     });
 
-    _socketService.onRideConfirmed = (data) {
-      print('✅ Ride confirmed: $data');
-      if (mounted) {
-        _playNotificationSound();
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('Ride confirmed!')));
-      }
-      _handleRideConfirmation(data);
-    };
-
     _socketService.onRideCancelled = (data) {
       print('❌ Ride cancelled: $data');
       if (mounted) {
@@ -206,8 +398,14 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
   }
 
   void _handleIncomingTrip(dynamic rawData) {
-    print("📥 Raw incoming trip: $rawData");
-
+    print("===========================================");
+    print("🔥 Raw incoming trip DATA RECEIVED!");
+    print("Type: ${rawData.runtimeType}");
+    print("Content: $rawData");
+    print("isOnline: $isOnline");
+    print("vehicleType: ${widget.vehicleType}");
+    print("===========================================");
+    
     Map<String, dynamic> request;
 
     try {
@@ -220,7 +418,6 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
         return;
       }
 
-      // Normalize pickup/drop
       if (request['pickup'] is String) {
         try {
           request['pickup'] = jsonDecode(request['pickup']);
@@ -228,6 +425,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
           print("⚠️ Could not parse pickup as JSON: ${request['pickup']}");
         }
       }
+      
       if (request['drop'] is String) {
         try {
           request['drop'] = jsonDecode(request['drop']);
@@ -235,6 +433,19 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
           print("⚠️ Could not parse drop as JSON: ${request['drop']}");
         }
       }
+      
+      if (request['fare'] is String) {
+        try {
+          final fareString = request['fare'].toString().trim();
+          if (fareString.isNotEmpty) {
+            request['fare'] = double.parse(fareString);
+            print("✅ Parsed fare from string: ${request['fare']}");
+          }
+        } catch (e) {
+          print("⚠️ Could not parse fare as number: ${request['fare']} - Error: $e");
+        }
+      }
+      
     } catch (e) {
       print("❌ Failed to parse trip data: $e");
       return;
@@ -245,6 +456,16 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
       print("❌ No tripId found in request");
       return;
     }
+
+    final fare = request['fare'];
+    final fareAmount = fare != null ? _parseDouble(fare) : null;
+    
+    print("===========================================");
+    print("💰 TRIP FARE DETAILS:");
+    print("   Raw fare value: $fare");
+    print("   Fare type: ${fare.runtimeType}");
+    print("   Parsed amount: ${fareAmount != null ? '₹${fareAmount.toStringAsFixed(2)}' : 'NOT AVAILABLE'}");
+    print("===========================================");
 
     final isDuplicate = _seenTripIds.contains(tripId) ||
         rideRequests.any((req) {
@@ -257,6 +478,8 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
       print("⚠️ Duplicate trip ignored: $tripId");
       return;
     }
+    
+    _playNotificationSound();
 
     _seenTripIds.add(tripId);
     print("✅ Added trip to seen IDs: $tripId");
@@ -277,6 +500,11 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
       return;
     }
 
+    if (fareAmount == null || fareAmount <= 0) {
+      print("⚠️ WARNING: Trip $tripId has no valid fare amount!");
+      print("   This trip will be added to requests but may cause issues later.");
+    }
+
     setState(() {
       rideRequests.add(request);
       currentRide = rideRequests.isNotEmpty ? rideRequests.first : null;
@@ -286,26 +514,14 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     _showIncomingTripPopup(request);
   }
 
-  void _debugCurrentState() {
-    print("🔍 DEBUG - Current State:");
-    print("   Online: $isOnline");
-    print("   Current Ride: ${currentRide != null}");
-    print("   Confirmed Ride: ${confirmedRide != null}");
-    print("   Ride Requests in Queue: ${rideRequests.length}");
-    print("   Seen Trip IDs: ${_seenTripIds.length}");
-
-    if (currentRide != null) {
-      final tripId =
-          currentRide!['tripId']?.toString() ?? currentRide!['_id']?.toString();
-      print("   Current Trip ID: $tripId");
-    }
-  }
-
   void _showIncomingTripPopup(Map<String, dynamic> request) {
+    final fare = request['fare'];
+    final fareAmount = fare != null ? _parseDouble(fare) : null;
+    
     showModalBottomSheet(
       context: context,
       isDismissible: false,
-      backgroundColor: Colors.white,
+      backgroundColor: AppColors.background,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -317,23 +533,35 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
-                children: const [
-                  Icon(Icons.local_taxi, color: Colors.blue, size: 28),
-                  SizedBox(width: 10),
-                  Text(
-                    "New Ride Request",
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
+                children: [
+                  Icon(Icons.local_taxi, color: AppColors.primary, size: 28),
+                  const SizedBox(width: 10),
+                  Text("New Ride Request", style: AppTextStyles.heading3),
                 ],
               ),
               const SizedBox(height: 16),
-              Text("Pickup: ${request['pickup']?['address'] ?? ''}",
-                  style: const TextStyle(fontSize: 16)),
-              Text("Drop: ${request['drop']?['address'] ?? ''}",
-                  style: const TextStyle(fontSize: 16)),
+              Text("Pickup: ${request['pickup']?['address'] ?? ''}", style: AppTextStyles.body1),
+              Text("Drop: ${request['drop']?['address'] ?? ''}", style: AppTextStyles.body1),
+              const SizedBox(height: 12),
+              if (fareAmount != null)
+                Container(
+                  padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                  decoration: BoxDecoration(
+                    color: AppColors.success.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppColors.success),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text("Trip Fare:", style: AppTextStyles.body1),
+                      Text(
+                        "₹${fareAmount.toStringAsFixed(2)}",
+                        style: AppTextStyles.heading3.copyWith(color: AppColors.success),
+                      ),
+                    ],
+                  ),
+                ),
               const SizedBox(height: 24),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -341,28 +569,28 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
                   ElevatedButton.icon(
                     icon: const Icon(Icons.cancel),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.red,
-                      padding:
-                          const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
+                      backgroundColor: AppColors.error,
+                      foregroundColor: AppColors.onPrimary,
+                      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
                     ),
                     onPressed: () {
                       Navigator.pop(context);
                       rejectRide();
                     },
-                    label: const Text("Reject"),
+                    label: Text("Reject", style: AppTextStyles.button.copyWith(color: AppColors.onPrimary)),
                   ),
                   ElevatedButton.icon(
                     icon: const Icon(Icons.check_circle),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.green,
-                      padding:
-                          const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
+                      backgroundColor: AppColors.success,
+                      foregroundColor: AppColors.onPrimary,
+                      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
                     ),
                     onPressed: () {
                       Navigator.pop(context);
                       acceptRide();
                     },
-                    label: const Text("Accept"),
+                    label: Text("Accept", style: AppTextStyles.button.copyWith(color: AppColors.onPrimary)),
                   ),
                 ],
               ),
@@ -373,261 +601,388 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     );
   }
 
-  void _handleRideConfirmation(dynamic data) {
-    print("✅ Ride confirmation received: $data");
+  void _playNotificationSound() async {
+    await _audioPlayer.play(AssetSource('sounds/notification.mp3'));
+  }
+  
+  void _launchGoogleMaps(double lat, double lng) async {
+    final Uri googleMapsAppUrl = Uri.parse('google.navigation:q=$lat,$lng&mode=d');
+    final Uri googleMapsWebUrl = Uri.parse(
+        'https://www.google.com/maps/dir/?api=1&destination=$lat,$lng&travelmode=driving');
 
-    if (!isOnline) {
-      print("❌ Ignored confirmation because driver is off duty");
+    try {
+      if (await canLaunchUrl(googleMapsAppUrl)) {
+        await launchUrl(
+          googleMapsAppUrl,
+          mode: LaunchMode.externalApplication,
+        );
+        print('✅ Opened Google Maps app with navigation');
+      } 
+      else if (await canLaunchUrl(googleMapsWebUrl)) {
+        await launchUrl(
+          googleMapsWebUrl,
+          mode: LaunchMode.externalApplication,
+        );
+        print('🌐 Opened Google Maps in browser');
+      } 
+      else {
+        print('❌ Could not launch Google Maps.');
+      }
+    } catch (e) {
+      print('🚨 Error launching Google Maps: $e');
+    }
+  }
+
+  Future<void> _goToPickup() async {
+    if (_activeTripId == null) return;
+
+    try {
+      final response = await http.post(
+        Uri.parse('$apiBase/api/trip/going-to-pickup'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'tripId': _activeTripId,
+          'driverId': driverId,
+        }),
+      );
+
+      final data = jsonDecode(response.body);
+      
+      if (response.statusCode == 200 && data['success']) {
+        setState(() {
+          ridePhase = 'at_pickup';
+        });
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('You have arrived. Please enter the ride code from the customer.')),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(data['message'] ?? 'Failed to update status')),
+        );
+      }
+    } catch (e) {
+      print('❌ Error in goToPickup: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e')),
+      );
+    }
+  }
+
+  Future<void> _startRide() async {
+    if (_activeTripId == null || _currentPosition == null) return;
+
+    final enteredOtp = otpController.text.trim();
+    if (enteredOtp.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please enter OTP from customer')),
+      );
       return;
     }
 
-    final confirmation = Map<String, dynamic>.from(data);
+    try {
+      print('🔥 Emitting trip:start_ride socket event');
+      _socketService.socket.emit('trip:start_ride', {
+        'tripId': _activeTripId,
+        'driverId': driverId,
+        'otp': enteredOtp,
+      });
 
-    setState(() {
-      confirmedRide = confirmation;
-    });
+      final response = await http.post(
+        Uri.parse('$apiBase/api/trip/start-ride'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'tripId': _activeTripId,
+          'driverId': driverId,
+          'otp': enteredOtp,
+          'driverLat': _currentPosition!.latitude,
+          'driverLng': _currentPosition!.longitude,
+        }),
+      );
 
-    _showRideConfirmationNotification(confirmation);
+      final data = jsonDecode(response.body);
+      
+      if (response.statusCode == 200 && data['success']) {
+        setState(() {
+          ridePhase = 'going_to_drop';
+          otpController.clear();
+        });
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Ride started! Navigate to drop location'),
+            backgroundColor: AppColors.success,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(data['message'] ?? 'Failed to start ride')),
+        );
+      }
+    } catch (e) {
+      print('❌ Error in startRide: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e')),
+      );
+    }
   }
 
-  void _playNotificationSound() async {
-    await _audioPlayer.play(AssetSource('sounds/notification.mp3'));
+  void _clearActiveTrip() {
+    setState(() {
+      activeTripDetails = null;
+      _polylines.clear();
+      _markers.clear();
+      _customerPickup = null;
+      _activeTripId = null;
+      ridePhase = 'none';
+      customerOtp = null;
+      finalFareAmount = null;
+      tripFareAmount = null;
+      otpController.clear();
+    });
+    _locationUpdateTimer?.cancel();
+    print('🧹 Cleared active trip from state. UI returned to dashboard.');
+  }
+
+  Future<void> _completeRideNew() async {
+    if (_activeTripId == null || _currentPosition == null) return;
+
+    try {
+      print('🔥 Emitting trip:complete_ride socket event');
+      _socketService.socket.emit('trip:complete_ride', {
+        'tripId': _activeTripId,
+        'driverId': driverId,
+      });
+
+      final response = await http.post(
+        Uri.parse('$apiBase/api/trip/complete-ride'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'tripId': _activeTripId,
+          'driverId': driverId,
+          'driverLat': _currentPosition!.latitude,
+          'driverLng': _currentPosition!.longitude,
+        }),
+      );
+
+      final data = jsonDecode(response.body);
+      
+      if (response.statusCode == 200 && data['success']) {
+        setState(() {
+          ridePhase = 'completed';
+          finalFareAmount = tripFareAmount ?? 0.0;
+        });
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Ride completed! Fare: ₹${finalFareAmount?.toStringAsFixed(2)}'),
+            backgroundColor: AppColors.success,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(data['message'] ?? 'Failed to complete ride')),
+        );
+      }
+    } catch (e) {
+      print('❌ Error in completeRide: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e')),
+      );
+    }
+  }
+
+  Future<void> _confirmCashCollection() async {
+    if (_activeTripId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No active trip found')),
+      );
+      return;
+    }
+
+    if (tripFareAmount == null || tripFareAmount! <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Trip fare not available. Please try again.')),
+      );
+      return;
+    }
+
+    try {
+      print('💰 Confirming cash collection:');
+      print('   Trip ID: $_activeTripId');
+      print('   Driver ID: $driverId');
+      print('   Fare: ₹$tripFareAmount');
+
+      final response = await http.post(
+        Uri.parse('$apiBase/api/wallet/collect-cash'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'tripId': _activeTripId,
+          'driverId': driverId,
+          'fare': tripFareAmount,
+        }),
+      );
+
+      final data = jsonDecode(response.body);
+      
+      print('📥 Cash collection response: $data');
+      
+      if (response.statusCode == 200 && data['success']) {
+        final fareBreakdown = data['fareBreakdown'];
+        final walletInfo = data['wallet'];
+        
+        await showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => AlertDialog(
+            backgroundColor: AppColors.background,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            title: Row(
+              children: [
+                Icon(Icons.check_circle, color: AppColors.success, size: 32),
+                const SizedBox(width: 12),
+                Expanded(child: Text('Cash Collected ✅', style: AppTextStyles.heading3)),
+              ],
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Divider(color: AppColors.divider),
+                  _buildFareRow('Trip Fare', fareBreakdown['tripFare'], bold: true),
+                  const SizedBox(height: 8),
+                  _buildFareRow(
+                    'Platform Commission (${fareBreakdown['commissionPercentage']}%)',
+                    fareBreakdown['commission'],
+                    isNegative: true,
+                    color: AppColors.warning,
+                  ),
+                  Divider(thickness: 2, color: AppColors.divider),
+                  _buildFareRow(
+                    'Your Earning',
+                    fareBreakdown['driverEarning'],
+                    bold: true,
+                    color: AppColors.success,
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppColors.primary.withOpacity(0.3)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Wallet Summary', style: AppTextStyles.body1),
+                        const SizedBox(height: 8),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text('Total Earnings:', style: AppTextStyles.body2),
+                            Text(
+                              '₹${walletInfo['totalEarnings'].toStringAsFixed(2)}',
+                              style: AppTextStyles.body1,
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text('Pending Commission:', style: AppTextStyles.body2),
+                            Text(
+                              '₹${walletInfo['pendingAmount'].toStringAsFixed(2)}',
+                              style: AppTextStyles.body1.copyWith(color: AppColors.warning),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => WalletPage(driverId: driverId),
+                    ),
+                  );
+                },
+                child: Text('View Wallet', style: AppTextStyles.button.copyWith(color: AppColors.primary)),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  _clearActiveTrip();
+    _fetchWalletData(); // ✅ FIXED - Refresh wallet data
+    _fetchTodayEarnings(); // ✅ ADD THIS to refresh today's earnings
+
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Ready for next ride!')),
+                  );
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.success,
+                  foregroundColor: AppColors.onPrimary,
+                ),
+                child: Text('Done', style: AppTextStyles.button.copyWith(color: AppColors.onPrimary)),
+              ),
+            ],
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(data['message'] ?? 'Failed to confirm cash collection')),
+        );
+      }
+    } catch (e) {
+      print('❌ Error confirming cash: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e')),
+      );
+    }
   }
 
   void _stopNotificationSound() async {
     await _audioPlayer.stop();
   }
 
-  void _showRideConfirmationNotification(Map<String, dynamic> confirmation) {
-    _playNotificationSound();
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          'Ride confirmed! ${confirmation['message'] ?? 'Customer has confirmed the ride.'}',
-        ),
-        backgroundColor: Colors.green,
-        duration: const Duration(seconds: 5),
-        action: SnackBarAction(
-          label: 'VIEW',
-          textColor: Colors.white,
-          onPressed: () {
-            _showRideConfirmationDetails(confirmation);
-          },
-        ),
-      ),
-    );
-  }
-
-  void _showRideConfirmationDetails(Map<String, dynamic> confirmation) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text(
-          'Ride Confirmed',
-          style: TextStyle(color: Colors.green),
-        ),
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'Ride ID: ${confirmation['rideId'] ?? confirmation['id'] ?? 'N/A'}',
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Customer: ${confirmation['userName'] ?? confirmation['customerName'] ?? 'N/A'}',
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Pickup: ${_getAddressFromConfirmation(confirmation, 'pickup')}',
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Destination: ${_getAddressFromConfirmation(confirmation, 'drop')}',
-              ),
-              const SizedBox(height: 8),
-              Text('Payment: ${confirmation['paymentMethod'] ?? 'Cash'}'),
-              const SizedBox(height: 8),
-              Text(
-                'Amount: ₹${confirmation['fare'] ?? confirmation['amount'] ?? 'N/A'}',
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('CLOSE'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-            onPressed: () {
-              Navigator.pop(context);
-              _handleConfirmedRide(confirmation);
-            },
-            child: const Text('NAVIGATE'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _getAddressFromConfirmation(
-    Map<String, dynamic> confirmation,
-    String type,
-  ) {
-    if (confirmation[type] != null) {
-      if (confirmation[type] is Map) {
-        return confirmation[type]['address'] ?? 'N/A';
-      } else {
-        return confirmation[type].toString();
-      }
-    }
-    return 'N/A';
-  }
-
-  void _handleConfirmedRide(Map<String, dynamic> confirmation) {
+  void _completeRide() {
     try {
-      double? pickupLat, pickupLng;
-
-      if (confirmation['pickup'] is Map) {
-        pickupLat =
-            double.tryParse(confirmation['pickup']['lat']?.toString() ?? '') ??
-                double.tryParse(
-                    confirmation['pickup']['latitude']?.toString() ?? '');
-        pickupLng =
-            double.tryParse(confirmation['pickup']['lng']?.toString() ?? '') ??
-                double.tryParse(
-                    confirmation['pickup']['longitude']?.toString() ?? '');
-      }
-
-      if (pickupLat != null && pickupLng != null) {
-        _customerPickup = LatLng(pickupLat, pickupLng);
-
-        _drawRouteToCustomer();
-
-        _startLiveLocationUpdates();
-
-        _showRideActionButtons(confirmation);
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Navigating to pickup location')),
-        );
-      } else {
-        print('❌ Could not extract pickup location from confirmation: $confirmation');
-      }
-    } catch (e) {
-      print('❌ Error handling confirmed ride: $e');
-    }
-  }
-
-  void _showRideActionButtons(Map<String, dynamic> confirmation) {
-    showModalBottomSheet(
-      context: context,
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              'Ride to ${_getAddressFromConfirmation(confirmation, "destination")}',
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                ElevatedButton.icon(
-                  icon: const Icon(Icons.check_circle),
-                  label: const Text('Complete Ride'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
-                    foregroundColor: Colors.white,
-                  ),
-                  onPressed: () {
-                    _completeRide(confirmation);
-                    Navigator.pop(context);
-                  },
-                ),
-                ElevatedButton.icon(
-                  icon: const Icon(Icons.cancel),
-                  label: const Text('Cancel Ride'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red,
-                    foregroundColor: Colors.white,
-                  ),
-                  onPressed: () {
-                    _cancelRide(confirmation);
-                    Navigator.pop(context);
-                  },
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _completeRide(Map<String, dynamic> confirmation) {
-    try {
-      final String rideId = confirmation['_id'] ?? confirmation['id'] ?? '';
-      if (rideId.isEmpty) {
+      final String tripId = activeTripDetails?['tripId'] ?? '';
+      if (tripId.isEmpty) {
         print('❌ Cannot complete ride: Missing ride ID');
         return;
       }
-
-      final String? driverId = widget.driverId;
-      if (driverId == null || driverId.isEmpty) {
-        print('❌ Cannot complete ride: Missing driver ID');
-        return;
-      }
-
-      _socketService.completeRide(driverId, rideId);
-      print('✅ Called completeRide with driverId: $driverId, rideId: $rideId');
-
-      _clearConfirmedRide();
-      _clearRouteAndMarkers();
-      setState(() => _activeTripId = null);
+      _socketService.completeRide(driverId, tripId);
+      print('✅ Called completeRide for tripId: $tripId');
+      
+      _clearActiveTrip();
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Ride completed successfully')),
       );
     } catch (e) {
       print('❌ Error completing ride: $e');
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Failed to complete ride')));
     }
   }
 
-  void _cancelRide(Map<String, dynamic> confirmation) {
+  void _cancelRide() {
     try {
-      _clearConfirmedRide();
-      _clearRouteAndMarkers();
-      setState(() => _activeTripId = null);
-
+      _clearActiveTrip();
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('Ride cancelled')));
     } catch (e) {
       print('❌ Error cancelling ride: $e');
     }
-  }
-
-  void _clearRouteAndMarkers() {
-    setState(() {
-      _polylines.clear();
-      _markers.clear();
-      _customerPickup = null;
-    });
-  }
-
-  void _clearConfirmedRide() {
-    setState(() {
-      confirmedRide = null;
-    });
-    print('🧹 Cleared confirmed ride from state');
   }
 
   Future<void> _requestLocationPermission() async {
@@ -638,31 +993,6 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
           content: Text('Location permission is required to use map.'),
         ),
       );
-    }
-  }
-
-  Future<Map<String, dynamic>?> verifyDriverWithBackend(
-    String vehicleType,
-  ) async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return null;
-
-    final idToken = await user.getIdToken();
-
-    final response = await http.post(
-      Uri.parse('http://192.168.1.9:5002/api/driver/login'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'firebaseIdToken': idToken,
-        'vehicleType': vehicleType,
-      }),
-    );
-
-    if (response.statusCode == 200) {
-      return jsonDecode(response.body);
-    } else {
-      print("❌ Driver login failed: ${response.body}");
-      return null;
     }
   }
 
@@ -714,9 +1044,11 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
       return;
     }
 
-    print('✅ Driver accepting ride: $tripId');
+    final fare = currentRide!['fare'];
+    final fareAmount = fare != null ? _parseDouble(fare) : null;
 
-    // Emit without ack (avoids "too many positional arguments" error)
+    print('✅ Driver accepting ride: $tripId with fare: $fareAmount');
+
     try {
       _socketService.socket.emit('driver:accept_trip', {
         'tripId': tripId,
@@ -732,33 +1064,19 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
       return;
     }
 
-    // Mark this trip as active for live location updates
-    setState(() => _activeTripId = tripId);
+    setState(() {
+      _activeTripId = tripId;
+      ridePhase = 'going_to_pickup';
+      tripFareAmount = fareAmount;
+      finalFareAmount = fareAmount;
+    });
 
-    print('📤 Emitted driver:accept_trip event:');
-    print('   - tripId: $tripId');
-    print('   - driverId: $driverId');
-
-    // Fetch customer pickup location (optional UI enhancement)
-    final customerId = currentRide!['customerId'] ?? currentRide!['userId'];
-    if (customerId != null) {
-      await _fetchCustomerPickupLocation(customerId.toString());
-    }
-
-    // Draw navigation route
-    await _drawRouteToCustomer();
-
-    // Start sending driver live location updates
-    _startLiveLocationUpdates();
-
-    // Show confirmation to driver
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Ride Accepted!")),
+        const SnackBar(content: Text("Ride Accepted! Click 'Go to Pickup' to start")),
       );
     }
 
-    // Remove this trip from queue and move to next (if any)
     setState(() {
       rideRequests.removeWhere((req) {
         final id = (req['tripId'] ?? req['_id'])?.toString();
@@ -778,44 +1096,6 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
       _updateDriverStatusSocket();
       _sendLocationToBackend(pos.latitude, pos.longitude);
     });
-  }
-
-  LatLng? _pickupLocation;
-
-  Future<void> _fetchCustomerPickupLocation(String customerId) async {
-    try {
-      final res = await http.get(
-        Uri.parse('$apiBase/api/location/customer/$customerId'),
-      );
-
-      if (res.statusCode == 200) {
-        final data = jsonDecode(res.body);
-        final pickupLatLng = LatLng(data['latitude'], data['longitude']);
-
-        setState(() {
-          _markers.removeWhere((m) => m.markerId.value == 'pickup');
-          _markers.add(
-            Marker(
-              markerId: const MarkerId('pickup'),
-              position: pickupLatLng,
-              icon: BitmapDescriptor.defaultMarkerWithHue(
-                BitmapDescriptor.hueGreen,
-              ),
-            ),
-          );
-          _pickupLocation = pickupLatLng;
-          _customerPickup = pickupLatLng; // for route drawing
-        });
-
-        _googleMapController?.animateCamera(
-          CameraUpdate.newLatLngZoom(pickupLatLng, 15),
-        );
-      } else {
-        print("❌ Failed to fetch customer location: ${res.body}");
-      }
-    } catch (e) {
-      print("❌ Error fetching customer pickup location: $e");
-    }
   }
 
   Future<void> _drawRouteToCustomer() async {
@@ -856,7 +1136,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
         Polyline(
           polylineId: const PolylineId('routeToCustomer'),
           points: polylinePoints,
-          color: Colors.blue,
+          color: AppColors.primary,
           width: 5,
         ),
       );
@@ -909,6 +1189,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
 
   @override
   void dispose() {
+    otpController.dispose();
     _cleanupTimer?.cancel();
     _locationUpdateTimer?.cancel();
     _mapController?.dispose();
@@ -922,7 +1203,6 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
 
     _stopNotificationSound();
 
-    // Use tripId consistently
     final String tripId =
         (currentRide!['tripId'] ?? currentRide!['_id'] ?? '').toString();
 
@@ -944,207 +1224,279 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: AppColors.background,
       drawer: buildDrawer(),
       appBar: AppBar(
-        backgroundColor: Colors.white,
+        backgroundColor: AppColors.background,
         elevation: 1,
-        iconTheme: const IconThemeData(color: Colors.black),
+        iconTheme: IconThemeData(color: AppColors.onSurface),
         title: Row(
           children: [
             Text(
-              isOnline ? "ON DUTY" : "OFF DUTY",
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: isOnline ? Colors.blue : Colors.red,
-                  ),
+              activeTripDetails != null
+                  ? "En Route to Customer"
+                  : (isOnline ? "ON DUTY" : "OFF DUTY"),
+              style: AppTextStyles.heading3.copyWith(
+                color: activeTripDetails != null
+                    ? AppColors.primary
+                    : (isOnline ? AppColors.success : AppColors.error),
+              ),
             ),
             const SizedBox(width: 10),
-          Switch(
-  value: isOnline,
-  activeColor: Colors.blue,
-  inactiveThumbColor: Colors.grey,
-  onChanged: (value) async {
-    setState(() => isOnline = value);
-    if (!isOnline) {
-      setState(() => acceptsLong = false);
-    }
-    
-    // Add a small delay to ensure state is updated
-    await Future.delayed(const Duration(milliseconds: 100));
-    _updateDriverStatusSocket();
-    
-    print('🔘 Switch changed: ${value ? 'ONLINE' : 'OFFLINE'}');
-  },
-),],
+            if (activeTripDetails == null)
+              Switch(
+                value: isOnline,
+                activeColor: AppColors.primary,
+                inactiveThumbColor: AppColors.onSurfaceSecondary,
+                onChanged: (value) async {
+                  setState(() => isOnline = value);
+                  if (!isOnline) {
+                    setState(() => acceptsLong = false);
+                  }
+                  
+                  await Future.delayed(const Duration(milliseconds: 100));
+                  _updateDriverStatusSocket();
+                  
+                  print('📘 Switch changed: ${value ? 'ONLINE' : 'OFFLINE'}');
+                },
+              ),
+          ],
         ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.location_on_outlined, color: Colors.black),
-            onPressed: () {},
-          ),
-          IconButton(
-            icon: const Icon(Icons.notifications_none, color: Colors.black),
-            onPressed: () {},
-          ),
-          const SizedBox(width: 10),
-        ],
+        actions: activeTripDetails == null
+            ? [
+                IconButton(
+                  icon: Icon(Icons.location_on_outlined, color: AppColors.onSurface),
+                  onPressed: () {},
+                ),
+                IconButton(
+                  icon: Icon(Icons.notifications_none, color: AppColors.onSurface),
+                  onPressed: () {},
+                ),
+                const SizedBox(width: 10),
+              ]
+            : null,
       ),
       body: Stack(
         children: [
-          isOnline ? buildGoogleMap() : buildOffDutyUI(),
-          if (confirmedRide != null)
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.blue.shade600.withOpacity(0.95),
-                  borderRadius:
-                      const BorderRadius.vertical(bottom: Radius.circular(12)),
-                  boxShadow: const [
-                    BoxShadow(color: Colors.black26, blurRadius: 6)
-                  ],
-                ),
-                padding:
-                    const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
-                child: Row(
-                  children: [
-                    const Icon(Icons.check_circle, color: Colors.white),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'Ride confirmed: ${_getAddressFromConfirmation(confirmedRide!, "pickup")}',
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                            ),
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.navigation, color: Colors.white),
-                      onPressed: () => _handleConfirmedRide(confirmedRide!),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.close, color: Colors.white),
-                      onPressed: _clearConfirmedRide,
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          if (_pickupLocation != null)
-            Positioned(
-              bottom: 0,
-              left: 0,
-              right: 0,
-              child: Container(
-                padding: const EdgeInsets.all(16),
-                decoration: const BoxDecoration(
-                  color: Colors.white,
-                  borderRadius:
-                      BorderRadius.vertical(top: Radius.circular(20)),
-                  boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10)],
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      "Navigate to Customer Pickup Location",
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                            color: Colors.black87,
-                          ),
-                    ),
-                    const SizedBox(height: 10),
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.blue,
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 24, vertical: 14),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      onPressed: () {
-                        final lat = _pickupLocation!.latitude;
-                        final lng = _pickupLocation!.longitude;
-                        final googleMapsUrl =
-                            "https://www.google.com/maps/dir/?api=1&destination=$lat,$lng&travelmode=driving";
-                        launchUrl(
-                          Uri.parse(googleMapsUrl),
-                          mode: LaunchMode.externalApplication,
-                        );
-                      },
-                      child: const Text(
-                        "Go to Pickup",
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
+          if (activeTripDetails != null)
+            buildActiveTripUI(activeTripDetails!)
+          else if (isOnline)
+            buildGoogleMap()
+          else
+            buildOffDutyUI(),
+
+          if (activeTripDetails == null && isOnline)
+             buildRideRequestCard(),
         ],
       ),
     );
   }
 
-  Widget buildGoogleMap() {
-    LatLng center = _currentPosition != null
-        ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
-        : const LatLng(17.385044, 78.486671); // fallback Hyderabad
+  Widget _buildActionButtons(Map<String, dynamic> trip) {
+    const double proximityThreshold = 200.0;
 
-    return GoogleMap(
-      initialCameraPosition: CameraPosition(
-        target: center,
-        zoom: 14,
-      ),
-      myLocationEnabled: true,
-      myLocationButtonEnabled: true,
-      zoomControlsEnabled: false,
-      markers: {
-        if (_pickupLocation != null)
-          Marker(
-            markerId: const MarkerId("pickup"),
-            position: LatLng(
-              _pickupLocation!.latitude,
-              _pickupLocation!.longitude,
+    switch (ridePhase) {
+      case 'going_to_pickup':
+        return Column(
+          children: [
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                icon: const Icon(Icons.navigation_rounded),
+                label: Text('Navigate to Pickup', style: AppTextStyles.button.copyWith(color: AppColors.onPrimary)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: AppColors.onPrimary,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                ),
+                onPressed: () => _launchGoogleMaps(
+                  trip['pickup']['lat'],
+                  trip['pickup']['lng'],
+                ),
+              ),
             ),
-            infoWindow: const InfoWindow(title: "Pickup"),
-            icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
-          ),
-        if (currentRide != null && currentRide!['drop'] != null)
-          Marker(
-            markerId: const MarkerId("drop"),
-            position: LatLng(
-              _parseDouble(currentRide!['drop']['lat']) ?? 0.0,
-              _parseDouble(currentRide!['drop']['lng']) ?? 0.0,
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.location_on_rounded),
+                label: Text("I've Arrived at Pickup", style: AppTextStyles.button),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.warning,
+                  side: BorderSide(color: AppColors.warning),
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                ),
+                onPressed: () {
+                  if (_currentPosition == null) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Fetching your location...')),
+                    );
+                    return;
+                  }
+                  final pickupLocation = LatLng(trip['pickup']['lat'], trip['pickup']['lng']);
+                  final distance = _calculateDistance(_currentPosition!, pickupLocation);
+
+                  if (distance <= proximityThreshold) {
+                    _goToPickup(); 
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('You are still ${distance.toStringAsFixed(0)}m away from pickup.')),
+                    );
+                  }
+                },
+              ),
             ),
-            infoWindow: InfoWindow(
-              title: currentRide!['drop']['address'] ?? "Drop",
+          ],
+        );
+
+      case 'at_pickup':
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text("Enter OTP to start the ride.", style: AppTextStyles.heading3),
+            const SizedBox(height: 8),
+            Text("Ask the customer for their 4-digit code.", style: AppTextStyles.body2),
+            const SizedBox(height: 12),
+            TextField(
+              controller: otpController,
+              keyboardType: TextInputType.number,
+              textAlign: TextAlign.center,
+              maxLength: 4,
+              style: AppTextStyles.heading2.copyWith(letterSpacing: 12),
+              decoration: InputDecoration(
+                hintText: '----',
+                counterText: "",
+                border: const OutlineInputBorder(),
+                enabledBorder: OutlineInputBorder(
+                  borderSide: BorderSide(color: AppColors.divider),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderSide: BorderSide(color: AppColors.primary),
+                ),
+              ),
             ),
-            icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
-          ),
-      },
-      onMapCreated: (controller) {
-        _googleMapController = controller;
-        _mapController = controller; // ensure bounds/animate use the same controller
-      },
-    );
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                icon: const Icon(Icons.play_arrow_rounded),
+                label: Text('Start Ride', style: AppTextStyles.button.copyWith(color: AppColors.onPrimary)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.success,
+                  foregroundColor: AppColors.onPrimary,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                ),
+                onPressed: _startRide,
+              ),
+            ),
+          ],
+        );
+        
+      case 'going_to_drop':
+        return Column(
+          children: [
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                icon: const Icon(Icons.navigation_rounded),
+                label: Text('Navigate to Drop Location', style: AppTextStyles.button.copyWith(color: AppColors.onPrimary)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: AppColors.onPrimary,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                ),
+                onPressed: () => _launchGoogleMaps(
+                  trip['drop']['lat'],
+                  trip['drop']['lng'],
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.check_circle_outline_rounded),
+                label: Text('Complete Ride', style: AppTextStyles.button),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.success,
+                  side: BorderSide(color: AppColors.success),
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                ),
+                onPressed: () {
+                  if (_currentPosition == null) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Fetching your location...')),
+                    );
+                    return;
+                  }
+                  final dropLocation = LatLng(trip['drop']['lat'], trip['drop']['lng']);
+                  final distance = _calculateDistance(_currentPosition!, dropLocation);
+
+                  if (distance <= proximityThreshold) {
+                    _completeRideNew();
+                  } else {
+                     ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Please reach the drop point to complete the ride (${distance.toStringAsFixed(0)}m away).')),
+                    );
+                  }
+                },
+              ),
+            ),
+          ],
+        );
+        
+      case 'completed':
+        return Column(
+          children: [
+            Text(
+              "TRIP COMPLETED",
+              style: AppTextStyles.heading3.copyWith(color: AppColors.success),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              "Final Fare: ₹${finalFareAmount?.toStringAsFixed(2) ?? 'Calculating...'}",
+              style: AppTextStyles.heading2,
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                icon: const Icon(Icons.payments_rounded),
+                label: Text(
+                  'Confirm Cash Collected (₹${finalFareAmount?.toStringAsFixed(2) ?? ''})',
+                  style: AppTextStyles.button.copyWith(color: AppColors.onPrimary),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.success,
+                  foregroundColor: AppColors.onPrimary,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                ),
+                onPressed: _confirmCashCollection,
+              ),
+            ),
+          ],
+        );
+        
+      default:
+        return const SizedBox(
+          height: 50,
+          child: Center(child: CircularProgressIndicator())
+        );
+    }
   }
 
   Widget buildRideRequestCard() {
     if (currentRide == null) return const SizedBox();
+
+    final fare = currentRide!['fare'];
+    final fareAmount = fare != null ? _parseDouble(fare) : null;
 
     return Align(
       alignment: Alignment.bottomCenter,
       child: Card(
         margin: const EdgeInsets.all(16),
         elevation: 6,
+        color: AppColors.background,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         child: Padding(
           padding: const EdgeInsets.all(16.0),
@@ -1154,26 +1506,19 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
             children: [
               Row(
                 children: [
-                  const Icon(Icons.local_taxi, color: Colors.blue),
+                  Icon(Icons.local_taxi, color: AppColors.primary),
                   const SizedBox(width: 8),
-                  Text(
-                    "New Ride Request",
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black87,
-                        ),
-                  ),
+                  Text("New Ride Request", style: AppTextStyles.heading3),
                   const Spacer(),
                   if (rideRequests.isNotEmpty)
                     CircleAvatar(
                       radius: 12,
-                      backgroundColor: Colors.red,
+                      backgroundColor: AppColors.error,
                       child: Text(
-                        "${rideRequests.length + 1}",
-                        style: const TextStyle(
+                        "${rideRequests.length}",
+                        style: AppTextStyles.caption.copyWith(
+                          color: AppColors.onPrimary,
                           fontSize: 12,
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
                         ),
                       ),
                     ),
@@ -1182,39 +1527,60 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
               const SizedBox(height: 12),
               Text(
                 "Pickup: ${currentRide!['pickup']['address'] ?? ''}",
-                style: Theme.of(context).textTheme.bodyMedium,
+                style: AppTextStyles.body1,
               ),
               Text(
                 "Drop: ${currentRide!['drop']['address'] ?? ''}",
-                style: Theme.of(context).textTheme.bodyMedium,
+                style: AppTextStyles.body1,
               ),
+              const SizedBox(height: 12),
+              if (fareAmount != null)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                  decoration: BoxDecoration(
+                    color: AppColors.success.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppColors.success),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text("Trip Fare:", style: AppTextStyles.body1),
+                      Text(
+                        "₹${fareAmount.toStringAsFixed(2)}",
+                        style: AppTextStyles.heading3.copyWith(color: AppColors.success),
+                      ),
+                    ],
+                  ),
+                ),
               const SizedBox(height: 16),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   ElevatedButton(
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.red,
-                      padding:
-                          const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
+                      backgroundColor: AppColors.error,
+                      foregroundColor: AppColors.onPrimary,
+                      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12),
                       ),
                     ),
                     onPressed: rejectRide,
-                    child: const Text("Reject"),
+                    child: Text("Reject", style: AppTextStyles.button.copyWith(color: AppColors.onPrimary)),
                   ),
                   ElevatedButton(
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.blue,
-                      padding:
-                          const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: AppColors.onPrimary,
+                      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12),
                       ),
                     ),
                     onPressed: acceptRide,
-                    child: const Text("Accept"),
+                    child: Text("Accept", style: AppTextStyles.button.copyWith(color: AppColors.onPrimary)),
                   ),
                 ],
               ),
@@ -1225,44 +1591,478 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     );
   }
 
+  Widget buildActiveTripUI(Map<String, dynamic> tripData) {
+    return Stack(
+      children: [
+        GoogleMap(
+          initialCameraPosition: CameraPosition(
+            target: _currentPosition ?? const LatLng(17.385044, 78.486671),
+            zoom: 14,
+          ),
+          myLocationEnabled: true,
+          myLocationButtonEnabled: true,
+          markers: _markers,
+          polylines: _polylines,
+          onMapCreated: (controller) {
+            _mapController = controller;
+            _googleMapController = controller;
+          },
+        ),
+        _buildCustomerCard(tripData['customer'], tripData['trip']),
+      ],
+    );
+  }
+
+  Widget _buildCustomerCard(Map<String, dynamic> customer, Map<String, dynamic> trip) {
+    return Align(
+      alignment: Alignment.bottomCenter,
+      child: Container(
+        decoration: BoxDecoration(
+          color: AppColors.background,
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(32),
+            topRight: Radius.circular(32),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: AppColors.onSurface.withOpacity(0.2),
+              blurRadius: 20,
+              offset: const Offset(0, -5),
+            )
+          ],
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  CircleAvatar(
+                    radius: 35,
+                    backgroundImage: customer['photoUrl'] != null && customer['photoUrl'].isNotEmpty
+                        ? NetworkImage(customer['photoUrl'])
+                        : const AssetImage('assets/default_avatar.png') as ImageProvider,
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          customer['name'] ?? 'Customer',
+                          style: AppTextStyles.heading3,
+                        ),
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            Icon(Icons.star, color: AppColors.warning, size: 18),
+                            const SizedBox(width: 4),
+                            Text(
+                              (customer['rating'] ?? 5.0).toString(),
+                              style: AppTextStyles.body1,
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  _buildCircleButton(
+                    Icons.call,
+                    () => _makePhoneCall(customer['phone']?.toString() ?? ''),
+                  ),
+                  const SizedBox(width: 12),
+                  _buildCircleButton(
+                    Icons.chat_bubble_outline,
+                    () => _openChat(customer, trip),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.location_on, color: AppColors.primary),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('PICKUP LOCATION', style: AppTextStyles.caption),
+                              const SizedBox(height: 4),
+                              Text(
+                                trip['pickup']['address'] ?? 'Customer Location',
+                                style: AppTextStyles.body1,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    _buildActionButtons(trip),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+Future<void> _payCommissionViaUPI() async {
+  final pendingAmount = _parseDouble(walletData?['pendingAmount']) ?? 0.0;
+  
+  if (pendingAmount <= 0) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('No pending commission to pay'),
+        backgroundColor: AppColors.warning,
+      ),
+    );
+    return;
+  }
+
+  // UPI payment details
+  const upiId = '8341132728@mbk';
+  const receiverName = 'Platform Commission';
+  final amount = pendingAmount.toStringAsFixed(2);
+  final transactionNote = 'Commission Payment - Driver: $driverId';
+
+  // Create UPI payment URL
+  final upiUrl = 'upi://pay?pa=$upiId&pn=${Uri.encodeComponent(receiverName)}&am=$amount&cu=INR&tn=${Uri.encodeComponent(transactionNote)}';
+
+  try {
+    final uri = Uri.parse(upiUrl);
+    
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(
+        uri,
+        mode: LaunchMode.externalApplication,
+      );
+      
+      // Show confirmation dialog after payment attempt
+      Future.delayed(const Duration(seconds: 2), () {
+        if (mounted) {
+          _showPaymentConfirmationDialog(pendingAmount);
+        }
+      });
+    } else {
+      // Fallback: Show UPI ID for manual payment
+      _showManualPaymentDialog(upiId, pendingAmount);
+    }
+  } catch (e) {
+    print('❌ Error launching UPI: $e');
+    _showManualPaymentDialog(upiId, pendingAmount);
+  }
+}
+
+void _showPaymentConfirmationDialog(double amount) {
+  showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      title: Row(
+        children: [
+          Icon(Icons.payment, color: AppColors.primary),
+          const SizedBox(width: 12),
+          Text('Payment Confirmation', style: AppTextStyles.heading3),
+        ],
+      ),
+      content: Text(
+        'Have you completed the payment of ₹${amount.toStringAsFixed(2)}?',
+        style: AppTextStyles.body1,
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text('Not Yet', style: AppTextStyles.button.copyWith(color: AppColors.error)),
+        ),
+        ElevatedButton(
+          onPressed: () {
+            Navigator.pop(context);
+            // Refresh wallet data
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Payment recorded. It will be verified shortly.'),
+                backgroundColor: AppColors.success,
+              ),
+            );
+          },
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppColors.success,
+          ),
+          child: Text('Yes, Paid', style: AppTextStyles.button.copyWith(color: AppColors.onPrimary)),
+        ),
+      ],
+    ),
+  );
+}
+
+void _showManualPaymentDialog(String upiId, double amount) {
+  showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      title: Row(
+        children: [
+          Icon(Icons.qr_code, color: AppColors.primary),
+          const SizedBox(width: 12),
+          Expanded( // ✅ ADD Expanded
+            child: Text('Pay Manually', style: AppTextStyles.heading3),
+          ),
+        ],
+      ),
+      content: SingleChildScrollView( // ✅ ADD ScrollView
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Pay using any UPI app:', style: AppTextStyles.body1),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.divider),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // ✅ FIXED: UPI ID Row
+                  Row(
+                    children: [
+                      Expanded( // ✅ ADD Expanded
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('UPI ID:', style: AppTextStyles.body2),
+                            const SizedBox(height: 4),
+                            Text(
+                              upiId,
+                              style: AppTextStyles.body1.copyWith(
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        icon: Icon(Icons.copy, size: 20, color: AppColors.primary),
+                        onPressed: () {
+                          Clipboard.setData(ClipboardData(text: upiId));
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('UPI ID copied!'),
+                              backgroundColor: AppColors.success,
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                  const Divider(height: 24),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Amount:', style: AppTextStyles.body2),
+                      Text(
+                        '₹${amount.toStringAsFixed(2)}',
+                        style: AppTextStyles.heading3.copyWith(
+                          color: AppColors.success,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline, color: AppColors.primary, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Open any UPI app and pay to this UPI ID',
+                      style: AppTextStyles.body2.copyWith(
+                        color: AppColors.primary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text(
+            'Cancel',
+            style: AppTextStyles.button.copyWith(color: AppColors.onSurfaceSecondary),
+          ),
+        ),
+        ElevatedButton(
+          onPressed: () {
+            Navigator.pop(context);
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('After payment, verification takes 24 hours'),
+                backgroundColor: AppColors.success,
+              ),
+            );
+          },
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppColors.primary,
+          ),
+          child: Text('Got It', style: AppTextStyles.button.copyWith(color: AppColors.onPrimary)),
+        ),
+      ],
+    ),
+  );
+}
+
+  Future<void> _makePhoneCall(String phoneNumber) async {
+    if (phoneNumber.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Phone number not available')),
+      );
+      return;
+    }
+    final Uri phoneUri = Uri(scheme: 'tel', path: phoneNumber);
+    if (await canLaunchUrl(phoneUri)) {
+      await launchUrl(phoneUri);
+    }
+  }
+
+  void _openChat(Map<String, dynamic> customer, Map<String, dynamic> trip) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ChatPage(
+          tripId: activeTripDetails!['tripId'],
+          senderId: widget.driverId,
+          receiverId: customer['id'],
+          receiverName: customer['name'] ?? 'Customer',
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCircleButton(IconData icon, VoidCallback onPressed) {
+    return CircleAvatar(
+      backgroundColor: AppColors.surface,
+      child: IconButton(
+        icon: Icon(icon, color: AppColors.onSurface),
+        onPressed: onPressed,
+      ),
+    );
+  }
+
+  Widget buildGoogleMap() {
+    LatLng center = _currentPosition != null
+        ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
+        : const LatLng(17.385044, 78.486671);
+
+    return GoogleMap(
+      initialCameraPosition: CameraPosition(
+        target: center,
+        zoom: 14,
+      ),
+      myLocationEnabled: true,
+      myLocationButtonEnabled: true,
+      zoomControlsEnabled: false,
+      markers: _markers,
+      polylines: _polylines,
+      onMapCreated: (controller) {
+        _googleMapController = controller;
+        _mapController = controller;
+      },
+    );
+  }
+
   Widget buildOffDutyUI() {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         buildEarningsCard(),
         const SizedBox(height: 16),
-        buildPerformanceCard(),
+              buildWalletCard(), // ✅ CHANGED FROM buildPerformanceCard()
+
         const SizedBox(height: 30),
-        Image.asset('assets/mobile.png', height: 140),
+        Image.asset('assets/images/mobile.png', height: 140),
         const SizedBox(height: 20),
         Center(
           child: Text(
             "Start the engine, chase the earnings!",
-            style: Theme.of(context).textTheme.bodyMedium,
+            style: AppTextStyles.body1,
           ),
         ),
         const SizedBox(height: 10),
         Center(
           child: Text(
             "Go ON DUTY to start earning",
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black87,
-                ),
+            style: AppTextStyles.heading3,
           ),
         ),
       ],
     );
   }
 
+  Widget _buildFareRow(String label, dynamic amount, {
+    bool bold = false,
+    bool isNegative = false,
+    Color? color,
+  }) {
+    final displayAmount = amount is num ? amount.toDouble() : double.tryParse(amount.toString()) ?? 0.0;
+    
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: bold ? AppTextStyles.body1 : AppTextStyles.body2,
+            ),
+          ),
+          Text(
+            '${isNegative ? '-' : ''}₹${displayAmount.toStringAsFixed(2)}',
+            style: (bold ? AppTextStyles.heading3 : AppTextStyles.body1).copyWith(
+              color: color ?? AppColors.onSurface,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget buildDrawer() {
     return Drawer(
+      backgroundColor: AppColors.background,
       child: ListView(
         padding: EdgeInsets.zero,
         children: [
           DrawerHeader(
             decoration: BoxDecoration(
-              color: Colors.blue.shade600,
+              color: AppColors.primary,
             ),
             child: Row(
               children: [
@@ -1274,21 +2074,14 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisAlignment: MainAxisAlignment.center,
-                  children: const [
+                  children: [
                     Text(
                       "My Profile",
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
+                      style: AppTextStyles.heading3.copyWith(color: AppColors.onPrimary),
                     ),
                     Text(
                       "-- ⭐",
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: Colors.white70,
-                      ),
+                      style: AppTextStyles.body2.copyWith(color: AppColors.onPrimary),
                     ),
                   ],
                 ),
@@ -1296,93 +2089,99 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
                 OutlinedButton(
                   onPressed: () {},
                   style: OutlinedButton.styleFrom(
-                    side: const BorderSide(color: Colors.white),
+                    side: BorderSide(color: AppColors.onPrimary),
                     shape: const StadiumBorder(),
                   ),
-                  child: const Text(
+                  child: Text(
                     "Best",
-                    style: TextStyle(color: Colors.white),
+                    style: AppTextStyles.button.copyWith(color: AppColors.onPrimary, fontSize: 12),
                   ),
                 ),
               ],
             ),
           ),
-
+          
           buildDrawerItem(
             Icons.account_balance_wallet,
             "Earnings",
             "Transfer Money to Bank, History",
-            iconColor: Colors.blue.shade600,
+            iconColor: AppColors.primary,
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => WalletPage(driverId: driverId),
+                ),
+              );
+            },
           ),
+          
           buildDrawerItem(
             Icons.attach_money,
             "Incentives and More",
             "Know how you get paid",
-            iconColor: Colors.blue.shade600,
+            iconColor: AppColors.primary,
           ),
           buildDrawerItem(
             Icons.card_giftcard,
             "Rewards",
             "Insurance and Discounts",
-            iconColor: Colors.blue.shade600,
+            iconColor: AppColors.primary,
           ),
-
-          const Divider(),
-
+          Divider(color: AppColors.divider),
           buildDrawerItem(
             Icons.view_module,
             "Service Manager",
             "Food Delivery & more",
-            iconColor: Colors.blue.shade600,
+            iconColor: AppColors.primary,
           ),
           buildDrawerItem(
             Icons.map,
             "Demand Planner",
             "Past High Demand Areas",
-            iconColor: Colors.blue.shade600,
+            iconColor: AppColors.primary,
           ),
           buildDrawerItem(
             Icons.headset_mic,
             "Help",
             "Support, Accident Insurance",
-            iconColor: Colors.blue.shade600,
+            iconColor: AppColors.primary,
           ),
-
           Padding(
             padding: const EdgeInsets.all(16.0),
             child: Container(
               decoration: BoxDecoration(
-                color: Colors.blue.shade50,
+                color: AppColors.primary.withOpacity(0.1),
                 borderRadius: BorderRadius.circular(8),
               ),
               padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
               child: Row(
                 children: [
-                  const Icon(Icons.emoji_people, color: Colors.blue),
+                  Icon(Icons.emoji_people, color: AppColors.primary),
                   const SizedBox(width: 8),
-                  const Expanded(
+                  Expanded(
                     child: Text(
                       "Refer friends & Earn up to ₹",
-                      style: TextStyle(fontWeight: FontWeight.w500),
+                      style: AppTextStyles.body1,
                     ),
                   ),
                   TextButton(
                     onPressed: () {},
                     style: TextButton.styleFrom(
-                      foregroundColor: Colors.blue.shade700,
+                      foregroundColor: AppColors.primary,
                     ),
-                    child: const Text("Refer Now"),
+                    child: Text("Refer Now", style: AppTextStyles.button.copyWith(color: AppColors.primary, fontSize: 14)),
                   ),
                 ],
               ),
             ),
           ),
-
           if (widget.vehicleType.toLowerCase() == 'car')
             ListTile(
-              title: const Text("Accept Long Trips"),
+              title: Text("Accept Long Trips", style: AppTextStyles.body1),
               trailing: Switch(
-                activeColor: Colors.blue,
+                activeColor: AppColors.primary,
                 value: acceptsLong,
                 onChanged: isOnline
                     ? (value) {
@@ -1402,85 +2201,428 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
     String title,
     String subtitle, {
     Color iconColor = Colors.black54,
+    VoidCallback? onTap,
   }) {
     return ListTile(
       leading: Icon(icon, color: iconColor),
-      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w500)),
-      subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
-      onTap: () {},
+      title: Text(title, style: AppTextStyles.body1),
+      subtitle: Text(subtitle, style: AppTextStyles.caption),
+      onTap: onTap ?? () {},
     );
   }
 
-void _updateDriverStatusSocket() {
-  final lat = _currentPosition?.latitude ?? 0.0;
-  final lng = _currentPosition?.longitude ?? 0.0;
+  void _updateDriverStatusSocket() {
+    final lat = _currentPosition?.latitude ?? 0.0;
+    final lng = _currentPosition?.longitude ?? 0.0;
 
-  // Only send minimal info; backend should fetch profile from DB using driverId
-  _socketService.updateDriverStatus(
-    driverId,
-    isOnline,
-    lat,
-    lng,
-    widget.vehicleType,
-    fcmToken: driverFcmToken,
-    // Remove profileData, let backend handle it
-  );
+    _socketService.updateDriverStatus(
+      driverId,
+      isOnline,
+      lat,
+      lng,
+      widget.vehicleType,
+      fcmToken: driverFcmToken,
+    );
 
-  print('🚗 Driver status updated: ${isOnline ? 'ONLINE' : 'OFFLINE'}');
-}
+    print('🚗 Driver status updated: ${isOnline ? 'ONLINE' : 'OFFLINE'}');
+  }
+
+  
   Widget buildEarningsCard() {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: const [
-        Text(
-          "Today's Earnings",
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
-        ),
-        Text("₹0", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-      ],
-    );
-  }
-
-  Widget buildPerformanceCard() {
-    return Container(
+  // ✅ USE _parseDouble() to safely convert int/double
+  final todayTotal = _parseDouble(todayEarnings?['totalFares']) ?? 0.0;
+  final todayCommission = _parseDouble(todayEarnings?['totalCommission']) ?? 0.0;
+  final todayNet = _parseDouble(todayEarnings?['netEarnings']) ?? 0.0;
+  final tripsCount = (todayEarnings?['tripsCompleted'] as num?)?.toInt() ?? 0;
+  
+  return GestureDetector(
+    onTap: _fetchTodayEarnings, // Tap to refresh
+    child: Container(
       decoration: BoxDecoration(
-        color: Colors.green[100],
-        borderRadius: BorderRadius.circular(12),
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.divider),
       ),
-      padding: const EdgeInsets.all(16),
-      child: Row(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  "Best Performance!",
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  "17/20 Completed Orders",
-                  style: TextStyle(fontSize: 16),
-                ),
-                TextButton(
-                  onPressed: () {},
-                  child: Row(
-                    children: const [
-                      Text("Know more"),
-                      Icon(Icons.arrow_forward),
-                    ],
+          // Header
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.calendar_today, 
+                    color: AppColors.primary, 
+                    size: 20,
                   ),
+                  const SizedBox(width: 8),
+                  Text(
+                    "Today's Earnings",
+                    style: AppTextStyles.heading3,
+                  ),
+                ],
+              ),
+              if (isLoadingToday)
+                SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary),
+                  ),
+                )
+              else
+                Icon(Icons.refresh, 
+                  color: AppColors.onSurfaceSecondary, 
+                  size: 20,
                 ),
-              ],
-            ),
+            ],
           ),
-          const CircleAvatar(
-            radius: 30,
-            backgroundImage: AssetImage('assets/driver.jpg'),
+          
+          const SizedBox(height: 16),
+          
+          // Total Fares (Big Number)
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Total Fares',
+                    style: AppTextStyles.body2,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '₹${todayTotal.toStringAsFixed(2)}',
+                    style: AppTextStyles.heading1.copyWith(
+                      fontSize: 32,
+                      color: AppColors.success,
+                    ),
+                  ),
+                ],
+              ),
+              // Trips Badge
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: AppColors.primary.withOpacity(0.3)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.local_taxi, 
+                      color: AppColors.primary, 
+                      size: 16,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      '$tripsCount ${tripsCount == 1 ? 'trip' : 'trips'}',
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          
+          const SizedBox(height: 16),
+          
+          // Divider
+          Container(
+            height: 1,
+            color: AppColors.divider,
+          ),
+          
+          const SizedBox(height: 12),
+          
+          // Breakdown
+          Row(
+            children: [
+              Expanded(
+                child: _buildEarningsBreakdownItem(
+                  'Commission',
+                  todayCommission,
+                  Icons.percent,
+                  AppColors.warning,
+                  isNegative: true,
+                ),
+              ),
+              Container(
+                width: 1,
+                height: 40,
+                color: AppColors.divider,
+              ),
+              Expanded(
+                child: _buildEarningsBreakdownItem(
+                  'Net Earning',
+                  todayNet,
+                  Icons.account_balance_wallet,
+                  AppColors.success,
+                ),
+              ),
+            ],
           ),
         ],
       ),
-    );
-  }
+    ),
+  );
 }
+// Helper widget for breakdown items
+Widget _buildEarningsBreakdownItem(
+  String label, 
+  double amount, 
+  IconData icon, 
+  Color color, 
+  {bool isNegative = false}
+) {
+  return Column(
+    children: [
+      Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, color: color, size: 16),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: AppTextStyles.caption,
+          ),
+        ],
+      ),
+      const SizedBox(height: 4),
+      Text(
+        '${isNegative ? '-' : ''}₹${amount.toStringAsFixed(2)}',
+        style: AppTextStyles.body1.copyWith(
+          fontWeight: FontWeight.bold,
+          color: color,
+        ),
+      ),
+    ],
+  );
+}
+ Widget buildWalletCard() {
+  // ✅ USE _parseDouble() to safely convert int/double
+  final totalEarnings = _parseDouble(walletData?['totalEarnings']) ?? 0.0;
+  final pendingAmount = _parseDouble(walletData?['pendingAmount']) ?? 0.0;
+  
+  return GestureDetector(
+    onTap: _fetchWalletData, // ✅ ADD TAP TO REFRESH
+    child: Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            AppColors.primary,
+            AppColors.primary.withOpacity(0.7),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.primary.withOpacity(0.3),
+            blurRadius: 12,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        children: [
+          // Wallet Balance Section
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Wallet Balance',
+                    style: AppTextStyles.body2.copyWith(
+                      color: AppColors.onPrimary.withOpacity(0.9),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '₹${totalEarnings.toStringAsFixed(2)}',
+                    style: AppTextStyles.heading2.copyWith(
+                      color: AppColors.onPrimary,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+              // ✅ ADD LOADING INDICATOR
+              if (isLoadingWallet)
+                SizedBox(
+                  width: 28,
+                  height: 28,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    valueColor: AlwaysStoppedAnimation<Color>(AppColors.onPrimary),
+                  ),
+                )
+              else
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppColors.onPrimary.withOpacity(0.2),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    Icons.account_balance_wallet,
+                    color: AppColors.onPrimary,
+                    size: 28,
+                  ),
+                ),
+            ],
+          ),
+          
+          const SizedBox(height: 16),
+          
+          // Divider
+          Container(
+            height: 1,
+            color: AppColors.onPrimary.withOpacity(0.2),
+          ),
+          
+          const SizedBox(height: 16),
+          
+          // Pending Commission Section
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppColors.onPrimary.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.schedule,
+                          color: AppColors.onPrimary.withOpacity(0.9),
+                          size: 20,
+                        ),
+                        const SizedBox(width: 8),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Pending Commission',
+                              style: AppTextStyles.caption.copyWith(
+                                color: AppColors.onPrimary.withOpacity(0.9),
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              '₹${pendingAmount.toStringAsFixed(2)}',
+                              style: AppTextStyles.heading3.copyWith(
+                                color: AppColors.onPrimary,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                
+                // ✅ PAYMENT BUTTON (only show if pending > 0)
+                if (pendingAmount > 0) ...[
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: _payCommissionViaUPI,
+                          icon: const Icon(Icons.payment, size: 18),
+                          label: Text(
+                            'Pay Now via UPI',
+                            style: AppTextStyles.button.copyWith(
+                              fontSize: 14,
+                              color: AppColors.primary,
+                            ),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.onPrimary,
+                            foregroundColor: AppColors.primary,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            elevation: 0,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      ElevatedButton(
+                        onPressed: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => WalletPage(driverId: driverId),
+                            ),
+                          );
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.onPrimary.withOpacity(0.3),
+                          foregroundColor: AppColors.onPrimary,
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          elevation: 0,
+                        ),
+                        child: Icon(Icons.arrow_forward, size: 20),
+                      ),
+                    ],
+                  ),
+                ] else
+                  ElevatedButton.icon(
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => WalletPage(driverId: driverId),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.arrow_forward, size: 16),
+                    label: Text(
+                      'View Details',
+                      style: AppTextStyles.button.copyWith(
+                        fontSize: 12,
+                        color: AppColors.primary,
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.onPrimary,
+                      foregroundColor: AppColors.primary,
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      elevation: 0,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}}

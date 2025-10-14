@@ -4,6 +4,69 @@ import 'package:drivergoo/screens/driver_details_page.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:google_fonts/google_fonts.dart';
+
+// ✅ ADD THEME CLASSES
+class AppColors {
+  static const Color primary = Color.fromARGB(255, 212, 120, 0);
+  static const Color background = Colors.white;
+  static const Color onSurface = Colors.black;
+  static const Color surface = Color(0xFFF5F5F5);
+  static const Color onPrimary = Colors.white;
+  static const Color onSurfaceSecondary = Colors.black54;
+  static const Color onSurfaceTertiary = Colors.black38;
+  static const Color divider = Color(0xFFEEEEEE);
+  static const Color success = Color.fromARGB(255, 0, 66, 3);
+  static const Color warning = Color(0xFFFFA000);
+  static const Color error = Color(0xFFD32F2F);
+}
+
+class AppTextStyles {
+  static TextStyle get heading1 => GoogleFonts.plusJakartaSans(
+        fontSize: 32,
+        fontWeight: FontWeight.w800,
+        color: AppColors.onSurface,
+        letterSpacing: -0.5,
+      );
+
+  static TextStyle get heading2 => GoogleFonts.plusJakartaSans(
+        fontSize: 24,
+        fontWeight: FontWeight.w700,
+        color: AppColors.onSurface,
+        letterSpacing: -0.3,
+      );
+
+  static TextStyle get heading3 => GoogleFonts.plusJakartaSans(
+        fontSize: 18,
+        fontWeight: FontWeight.w600,
+        color: AppColors.onSurface,
+      );
+
+  static TextStyle get body1 => GoogleFonts.plusJakartaSans(
+        fontSize: 16,
+        fontWeight: FontWeight.w500,
+        color: AppColors.onSurface,
+      );
+
+  static TextStyle get body2 => GoogleFonts.plusJakartaSans(
+        fontSize: 14,
+        fontWeight: FontWeight.w500,
+        color: AppColors.onSurfaceSecondary,
+      );
+
+  static TextStyle get caption => GoogleFonts.plusJakartaSans(
+        fontSize: 12,
+        fontWeight: FontWeight.w500,
+        color: AppColors.onSurfaceTertiary,
+        letterSpacing: 0.5,
+      );
+
+  static TextStyle get button => GoogleFonts.plusJakartaSans(
+        fontSize: 16,
+        fontWeight: FontWeight.w700,
+        color: AppColors.onSurface,
+      );
+}
 
 class DocumentsReviewPage extends StatefulWidget {
   final String? driverId;
@@ -19,13 +82,14 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
   bool isApproved = false;
   List<Map<String, dynamic>> documents = [];
   String? errorMessage;
-  final String backendUrl = "http://192.168.1.9:5002";
+  String? vehicleType;
+  final String backendUrl = "https://cd4ec7060b0b.ngrok-free.app";
 
   Future<String?> getToken() async {
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user != null) {
-        return await user.getIdToken();
+        return await user.getIdToken(true);
       }
       return null;
     } catch (e) {
@@ -75,7 +139,6 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         
-        // Check if the response contains a "message" about no documents
         if (data.containsKey('message') && data['message'].toString().toLowerCase().contains('no documents')) {
           setState(() {
             documents = [];
@@ -86,8 +149,10 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
           return;
         }
         
-        // ✅ FIX: Check if response has "docs" array or if it's empty
         final docs = List<Map<String, dynamic>>.from(data["docs"] ?? []);
+        
+        // ✅ Get vehicle type from response
+        vehicleType = data["vehicleType"]?.toString();
         
         print("📊 Found ${docs.length} documents");
         
@@ -101,7 +166,6 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
           return;
         }
 
-        // Debug: Print each document's status
         for (var doc in docs) {
           print("📄 Document: ${doc['docType']} - Status: ${doc['status']}");
         }
@@ -110,10 +174,10 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
           documents = docs;
           
           isApproved = docs.isNotEmpty &&
-    docs.every((doc) {
-      final status = doc['status']?.toString().toLowerCase();
-      return status == 'approved' || status == 'verified';
-    });
+            docs.every((doc) {
+              final status = doc['status']?.toString().toLowerCase();
+              return status == 'approved' || status == 'verified';
+            });
 
           isLoading = false;
           errorMessage = null;
@@ -134,7 +198,6 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
           errorMessage = "No documents found. Please upload your documents first.";
         });
       } else {
-        // Handle other error responses that might contain the "no documents" message
         final errorData = json.decode(response.body);
         final errorMsg = errorData['message'] ?? "Failed to fetch documents";
         
@@ -170,19 +233,21 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
   }
 
   Color _getStatusColor(String status) {
-    switch (status?.toLowerCase()) {
+    switch (status.toLowerCase()) {
       case "approved":
-        return Colors.green;
+      case "verified":
+        return AppColors.success;
       case "rejected":
-        return Colors.red;
+        return AppColors.error;
       default:
-        return Colors.orange;
+        return AppColors.warning;
     }
   }
 
   IconData _getStatusIcon(String status) {
-    switch (status?.toLowerCase()) {
+    switch (status.toLowerCase()) {
       case "approved":
+      case "verified":
         return Icons.check_circle;
       case "rejected":
         return Icons.cancel;
@@ -192,216 +257,399 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
   }
 
   String _getStatusText(String status) {
-  switch (status.toLowerCase()) {
-    case "approved":
-    case "verified":
-      return "Approved";
-    case "rejected":
-      return "Rejected";
-    default:
-      return "Pending Review";
+    switch (status.toLowerCase()) {
+      case "approved":
+      case "verified":
+        return "Approved";
+      case "rejected":
+        return "Rejected";
+      default:
+        return "Pending Review";
+    }
   }
-}
-
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black87,
+      backgroundColor: AppColors.background,
+      appBar: AppBar(
+        title: Text(
+          "Documents Review",
+          style: AppTextStyles.heading3.copyWith(color: AppColors.onPrimary),
+        ),
+        backgroundColor: AppColors.primary,
+        foregroundColor: AppColors.onPrimary,
+        elevation: 0,
+        automaticallyImplyLeading: false,
+      ),
       body: SafeArea(
         child: isLoading
-            ? const Center(
-                child: CircularProgressIndicator(color: Colors.blueAccent))
-            : Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(16),
-                decoration: const BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+            ? Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(
+                      color: AppColors.primary,
+                      strokeWidth: 3,
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      "Loading your documents...",
+                      style: AppTextStyles.body1,
+                    ),
+                  ],
                 ),
+              )
+            : SingleChildScrollView(
+                padding: const EdgeInsets.all(20),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Title
-                    Text(
-                      "Documents Review",
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                            fontWeight: FontWeight.bold,
-                            color: Colors.black87,
+                    // Header Icon & Title
+                    Center(
+                      child: Column(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(20),
+                            decoration: BoxDecoration(
+                              color: AppColors.primary.withOpacity(0.1),
+                              shape: BoxShape.circle,
+                            ),
+                            child: Icon(
+                              Icons.description,
+                              size: 60,
+                              color: AppColors.primary,
+                            ),
                           ),
+                          const SizedBox(height: 16),
+                          Text(
+                            "Document Verification",
+                            style: AppTextStyles.heading2,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            "Review your uploaded documents",
+                            style: AppTextStyles.body2,
+                          ),
+                        ],
+                      ),
                     ),
 
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 32),
 
                     // Error message if any
                     if (errorMessage != null)
-                      Column(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              color: Colors.orange[50],
-                              borderRadius: BorderRadius.circular(12),
+                      Container(
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          color: AppColors.warning.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                            color: AppColors.warning.withOpacity(0.3),
+                          ),
+                        ),
+                        child: Column(
+                          children: [
+                            Icon(
+                              Icons.warning_amber_rounded,
+                              color: AppColors.warning,
+                              size: 48,
                             ),
-                            child: Column(
+                            const SizedBox(height: 16),
+                            Text(
+                              errorMessage!,
+                              style: AppTextStyles.body1.copyWith(
+                                color: AppColors.warning,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 24),
+                            Row(
                               children: [
-                                Icon(
-                                  Icons.warning_amber,
-                                  color: Colors.orange[800],
-                                  size: 40,
-                                ),
-                                const SizedBox(height: 10),
-                                Text(
-                                  errorMessage!,
-                                  style: TextStyle(
-                                    color: Colors.orange[800],
-                                    fontSize: 16,
+                                Expanded(
+                                  child: OutlinedButton.icon(
+                                    onPressed: _retryFetch,
+                                    icon: const Icon(Icons.refresh),
+                                    label: Text(
+                                      "Retry",
+                                      style: AppTextStyles.button,
+                                    ),
+                                    style: OutlinedButton.styleFrom(
+                                      foregroundColor: AppColors.primary,
+                                      side: BorderSide(
+                                        color: AppColors.primary,
+                                        width: 2,
+                                      ),
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 14,
+                                      ),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                    ),
                                   ),
-                                  textAlign: TextAlign.center,
                                 ),
-                                const SizedBox(height: 16),
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                                  children: [
-                                    ElevatedButton(
-                                      onPressed: _retryFetch,
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: Colors.blue,
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: ElevatedButton.icon(
+                                    onPressed: _goToDocumentUpload,
+                                    icon: const Icon(Icons.upload_file),
+                                    label: Text(
+                                      "Upload",
+                                      style: AppTextStyles.button.copyWith(
+                                        color: AppColors.onPrimary,
                                       ),
-                                      child: const Text("Retry", style: TextStyle(color: Colors.white)),
                                     ),
-                                    ElevatedButton(
-                                      onPressed: _goToDocumentUpload,
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: Colors.green,
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: AppColors.primary,
+                                      foregroundColor: AppColors.onPrimary,
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 14,
                                       ),
-                                      child: const Text("Upload Documents", style: TextStyle(color: Colors.white)),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      elevation: 0,
                                     ),
-                                  ],
+                                  ),
                                 ),
                               ],
                             ),
-                          ),
-                          const SizedBox(height: 20),
-                        ],
+                          ],
+                        ),
                       ),
 
                     if (errorMessage == null && documents.isNotEmpty) ...[
-                      // Driver status
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            "Status:",
-                            style: TextStyle(
-                              fontSize: 16,
-                              color: Colors.black.withOpacity(0.7),
-                            ),
+                      // Status Card
+                      Container(
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: isApproved
+                                ? [
+                                    AppColors.success,
+                                    AppColors.success.withOpacity(0.8),
+                                  ]
+                                : [
+                                    AppColors.warning,
+                                    AppColors.warning.withOpacity(0.8),
+                                  ],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
                           ),
-                          Chip(
-                            label: Text(
-                              isApproved ? "Approved" : "Pending Review",
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
+                          borderRadius: BorderRadius.circular(16),
+                          boxShadow: [
+                            BoxShadow(
+                              color: (isApproved
+                                      ? AppColors.success
+                                      : AppColors.warning)
+                                  .withOpacity(0.3),
+                              blurRadius: 12,
+                              offset: const Offset(0, 6),
+                            ),
+                          ],
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              isApproved
+                                  ? Icons.verified
+                                  : Icons.pending_actions,
+                              color: AppColors.onPrimary,
+                              size: 40,
+                            ),
+                            const SizedBox(width: 16),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    "Verification Status",
+                                    style: AppTextStyles.caption.copyWith(
+                                      color: AppColors.onPrimary,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    isApproved
+                                        ? "All Documents Approved"
+                                        : "Under Review",
+                                    style: AppTextStyles.heading3.copyWith(
+                                      color: AppColors.onPrimary,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
-                            backgroundColor:
-                                isApproved ? Colors.green : Colors.orange,
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                      const SizedBox(height: 20),
+
+                      const SizedBox(height: 32),
 
                       // Documents section
                       Text(
-                        "Uploaded Documents",
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.black87,
-                        ),
+                        "Uploaded Documents (${documents.length})",
+                        style: AppTextStyles.heading3,
                       ),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: 16),
 
-                      Expanded(
-                        child: ListView.builder(
-                          itemCount: documents.length,
-                          itemBuilder: (context, index) {
-                            final doc = documents[index];
-                            final status = doc['status']?.toString() ?? 'pending';
-                            
-                            return Card(
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(16),
+                      // Documents list
+                      ListView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: documents.length,
+                        itemBuilder: (context, index) {
+                          final doc = documents[index];
+                          final status = doc['status']?.toString() ?? 'pending';
+                          
+                          return Container(
+                            margin: const EdgeInsets.only(bottom: 12),
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: AppColors.background,
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(
+                                color: _getStatusColor(status).withOpacity(0.3),
+                                width: 2,
                               ),
-                              elevation: 3,
-                              margin: const EdgeInsets.symmetric(vertical: 8),
-                              child: ListTile(
-                                leading: Icon(
-                                  _getStatusIcon(status),
-                                  color: _getStatusColor(status),
-                                  size: 32,
+                              boxShadow: [
+                                BoxShadow(
+                                  color: AppColors.onSurface.withOpacity(0.05),
+                                  blurRadius: 8,
+                                  offset: const Offset(0, 2),
                                 ),
-                                title: Text(
-                                  doc['docType']?.toString().toUpperCase() ?? "Unknown Document",
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w600,
+                              ],
+                            ),
+                            child: Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: _getStatusColor(status)
+                                        .withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(12),
                                   ),
-                                ),
-                                subtitle: Text(
-                                  _getStatusText(status),
-                                  style: TextStyle(
+                                  child: Icon(
+                                    _getStatusIcon(status),
                                     color: _getStatusColor(status),
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 14,
+                                    size: 28,
                                   ),
                                 ),
-                                trailing: Icon(
-                                  Icons.description,
-                                  color: Colors.blue.shade300,
+                                const SizedBox(width: 16),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        doc['docType']
+                                                ?.toString()
+                                                .toUpperCase() ??
+                                            "Unknown Document",
+                                        style: AppTextStyles.body1,
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        _getStatusText(status),
+                                        style: AppTextStyles.body2.copyWith(
+                                          color: _getStatusColor(status),
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                              ),
-                            );
-                          },
-                        ),
+                                Icon(
+                                  Icons.arrow_forward_ios,
+                                  color: AppColors.onSurfaceTertiary,
+                                  size: 16,
+                                ),
+                              ],
+                            ),
+                          );
+                        },
                       ),
-                      const SizedBox(height: 20),
+
+                      const SizedBox(height: 32),
 
                       // Action button
                       SizedBox(
                         width: double.infinity,
-                        child: ElevatedButton(
+                        child: ElevatedButton.icon(
                           onPressed: isApproved
                               ? () {
                                   Navigator.pushReplacement(
                                     context,
                                     MaterialPageRoute(
-                                      builder: (context) => DriverDashboardPage(
+                                      builder: (context) =>
+                                          DriverDashboardPage(
                                         driverId: widget.driverId!,
-                                        vehicleType: '', // You might want to pass this from backend
+                                        vehicleType: vehicleType ?? 'bike',
                                       ),
                                     ),
                                   );
                                 }
                               : null,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: isApproved ? Colors.green : Colors.grey,
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
+                          icon: Icon(
+                            isApproved
+                                ? Icons.dashboard
+                                : Icons.hourglass_empty,
+                            size: 24,
+                          ),
+                          label: Text(
+                            isApproved
+                                ? "Go to Dashboard"
+                                : "Waiting for Approval",
+                            style: AppTextStyles.button.copyWith(
+                              color: AppColors.onPrimary,
+                              fontSize: 18,
                             ),
                           ),
-                          child: Text(
-                            isApproved ? "Go to Dashboard" : "Waiting for Approval",
-                            style: const TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: isApproved
+                                ? AppColors.success
+                                : AppColors.onSurfaceSecondary,
+                            foregroundColor: AppColors.onPrimary,
+                            padding: const EdgeInsets.symmetric(vertical: 18),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
                             ),
+                            elevation: isApproved ? 4 : 0,
                           ),
                         ),
                       ),
+
+                      if (!isApproved) ...[
+                        const SizedBox(height: 16),
+                        Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: AppColors.primary.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: AppColors.primary.withOpacity(0.3),
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.info_outline,
+                                color: AppColors.primary,
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  "Your documents are being reviewed. You'll be notified once approved.",
+                                  style: AppTextStyles.body2.copyWith(
+                                    color: AppColors.primary,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ],
                   ],
                 ),

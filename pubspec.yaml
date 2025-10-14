@@ -44,7 +44,9 @@ dependencies:
   audioplayers: ^5.2.1
   url_launcher: ^6.2.6
   google_mlkit_text_recognition: ^0.15.0
-  
+  shared_preferences: ^2.2.2
+  upi_payment_qrcode_generator: ^1.2.1  # ✅ CHANGE TO THIS
+
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
@@ -70,6 +72,9 @@ flutter:
   assets:
     - assets/images/background.png
     - assets/sounds/notification.mp3
+    - assets/default_avatar.png
+    - assets/images/mobile.png
+    - assets/images/driver.png
 
   
   # To add assets to your application, add an assets section, like this:

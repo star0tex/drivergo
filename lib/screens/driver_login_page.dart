@@ -1,5 +1,3 @@
-
-import 'dart:convert';
 import 'package:drivergoo/screens/driver_details_page.dart';
 import 'package:drivergoo/screens/documents_review_page.dart';
 import 'package:drivergoo/screens/driver_dashboard_page.dart';
@@ -7,7 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
-import 'package:jwt_decoder/jwt_decoder.dart';
+import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class DriverLoginPage extends StatefulWidget {
   const DriverLoginPage({super.key});
@@ -21,224 +20,294 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
   final TextEditingController _otpController = TextEditingController();
   final FocusNode _otpFocus = FocusNode();
 
-  String _verificationId = '';
   bool _codeSent = false;
-  bool _autoVerified = false;
+  bool _isLoading = false;
+  bool _isCheckingSession = true;
 
-  final String backendUrl = "http://192.168.1.9:5002";
+  final String backendUrl = "https://cd4ec7060b0b.ngrok-free.app";
 
-Future<void> _routeDriver(String phoneOnly) async {
-  final user = FirebaseAuth.instance.currentUser;
-  if (user == null) {
-    _showError("Login failed. Firebase user is null.");
-    return;
+  @override
+  void initState() {
+    super.initState();
+    _checkExistingSession();
   }
 
-  _showLoadingDialog();
-
-  String token = await user.getIdToken() ?? '';
-  if (token.isEmpty) {
-    Navigator.pop(context);
-    _showError("Token is empty.");
-    return;
-  }
-
-  int attempts = 0;
-  bool tokenValid = false;
-
-  while (attempts < 10) {
+  /// ✅ CHECK IF USER IS ALREADY LOGGED IN (WITHOUT BACKEND VERIFICATION)
+  Future<void> _checkExistingSession() async {
     try {
-      final decoded = JwtDecoder.decode(token);
-      if (decoded.containsKey("phone_number") || decoded.containsKey("uid")) {
-        tokenValid = true;
-        break;
-      }
-    } catch (_) {}
+      final prefs = await SharedPreferences.getInstance();
+      final driverId = prefs.getString("driverId");
+      final vehicleType = prefs.getString("vehicleType") ?? '';
+      final isLoggedIn = prefs.getBool("isLoggedIn") ?? false;
+      final phoneNumber = prefs.getString("phoneNumber") ?? '';
 
-    await Future.delayed(const Duration(seconds: 1));
-    token = await user.getIdToken(true) ?? '';
-    attempts++;
-  }
+      print("🔍 Checking existing session...");
+      print("   Driver ID: $driverId");
+      print("   Phone: $phoneNumber");
+      print("   Vehicle Type: '$vehicleType'");
+      print("   Is Logged In: $isLoggedIn");
 
-  if (!tokenValid) {
-    Navigator.pop(context);
-    _showError("Login failed. Please try again.");
-    return;
-  }
-
-  try {
-    final res = await http.post(
-      Uri.parse("$backendUrl/api/auth/firebase-login"),
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": "Bearer $token",
-      },
-      body: jsonEncode({
-            "idToken": token,                    // ✅ ADD: Send token in body too
-
-        "phone": "+91$phoneOnly",
-        "role": "driver",
-      }),
-    );
-
-    Navigator.pop(context);
-
-    if (res.statusCode == 200) {
-      final data = json.decode(res.body);
-      final driverId = data["user"]["_id"]; // ✅ always use MongoDB _id
-      final isNewUser = data["newUser"] == true;
-
-      if (isNewUser) {
-        // 👉 New user, send to upload flow
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (_) => DriverDocumentUploadPage(driverId: driverId),
-          ),
-        );
-      } else {
-        // 👉 Existing user, check document status
-        final docsRes = await http.get(
-          Uri.parse("$backendUrl/api/driver/documents/$driverId"),
-          headers: {"Authorization": "Bearer $token"},
-        );
-
-        if (docsRes.statusCode == 200) {
-          final docsData = json.decode(docsRes.body);
-          final docs = List<Map<String, dynamic>>.from(docsData["docs"]);
-          final allApproved = docs.isNotEmpty &&
-              docs.every((doc) => doc["status"] == "approved");
-
-          // Get driver details including vehicle type
-          final driverDetailsRes = await http.get(
-            Uri.parse("$backendUrl/api/driver/$driverId"),
-            headers: {"Authorization": "Bearer $token"},
+      // ✅ Simply check if we have the required data
+      if (isLoggedIn && 
+          driverId != null && 
+          driverId.isNotEmpty && 
+          phoneNumber.isNotEmpty) {
+        
+        print("✅ Valid local session found - auto-navigating");
+        
+        // Small delay to prevent instant navigation (better UX)
+        await Future.delayed(const Duration(milliseconds: 500));
+        
+        if (!mounted) return;
+        
+        // Navigate to appropriate screen based on stored data
+        if (vehicleType.isNotEmpty) {
+          print("🚗 Navigating to dashboard with vehicle: '$vehicleType'");
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => DriverDashboardPage(
+                driverId: driverId,
+                vehicleType: vehicleType,
+              ),
+            ),
           );
-
-          if (driverDetailsRes.statusCode == 200) {
-            final driverDetails = json.decode(driverDetailsRes.body);
-            final vehicleType = driverDetails["vehicleType"] ?? "";
-
-            if (allApproved) {
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => DriverDashboardPage(
-                    driverId: driverId,
-                    vehicleType: vehicleType,
-                  ),
-                ),
-              );
-            } else {
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => DocumentsReviewPage(driverId: driverId),
-                ),
-              );
-            }
-          } else {
-            _showError("Failed to fetch driver details. ${driverDetailsRes.body}");
-          }
         } else {
-          _showError("Failed to fetch documents. ${docsRes.body}");
+          print("📄 No vehicle type - navigating to document upload");
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => DriverDocumentUploadPage(driverId: driverId),
+            ),
+          );
         }
+        return;
+      } else {
+        print("❌ No valid session found - showing login screen");
       }
-    } else {
-      _showError("Login failed: ${res.body}");
+    } catch (e) {
+      print("⚠️ Error checking session: $e");
+    } finally {
+      if (mounted) {
+        setState(() => _isCheckingSession = false);
+      }
     }
-  } catch (e) {
-    Navigator.pop(context);
-    _showError("Connection error: $e");
   }
-}
+
+  /// ✅ CLEAR SESSION DATA
+  Future<void> _clearSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.clear(); // Clear everything
+    
+    // Sign out from Firebase
+    try {
+      await FirebaseAuth.instance.signOut();
+    } catch (e) {
+      print("⚠️ Firebase sign-out error: $e");
+    }
+  }
+
   Future<void> _sendOTP() async {
-    await FirebaseAuth.instance.signOut();
+    if (_isLoading) return;
+
     setState(() {
+      _isLoading = true;
       _codeSent = false;
-      _verificationId = '';
       _otpController.clear();
     });
 
     final rawPhone = _phoneController.text.trim();
     if (rawPhone.length != 10) {
-      _showError("Please enter a valid 10-digit phone number.");
+      setState(() => _isLoading = false);
+      _showMessage("Please enter a valid 10-digit phone number.", isError: true);
       return;
     }
 
-    final String phone = "+91$rawPhone";
+    final String phoneWithCode = "+91$rawPhone";
 
     try {
-      await FirebaseAuth.instance.verifyPhoneNumber(
-        phoneNumber: phone,
-        timeout: const Duration(seconds: 60),
-        verificationCompleted: (PhoneAuthCredential credential) async {
-          try {
-            final userCred =
-                await FirebaseAuth.instance.signInWithCredential(credential);
-            if (userCred.user != null) {
-              _autoVerified = true;
-              await _routeDriver(rawPhone);
-            }
-          } catch (e) {
-            _showError("Auto-verification failed.");
-          }
-        },
-        verificationFailed: (FirebaseAuthException e) {
-          _showError("Verification failed: ${e.message}");
-        },
-        codeSent: (String verId, int? resendToken) {
-          setState(() {
-            _verificationId = verId;
-            _codeSent = true;
-          });
-          Future.delayed(
-            const Duration(milliseconds: 100),
-            () => _otpFocus.requestFocus(),
-          );
-        },
-        codeAutoRetrievalTimeout: (String verId) {
-          _verificationId = verId;
-        },
-      );
+      final response = await http.post(
+        Uri.parse("$backendUrl/api/auth/send-otp"),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({"phone": phoneWithCode}),
+      ).timeout(const Duration(seconds: 15));
+
+      setState(() => _isLoading = false);
+
+      if (response.statusCode == 200) {
+        setState(() => _codeSent = true);
+        _showMessage("OTP sent to your phone", isError: false);
+        Future.delayed(
+          const Duration(milliseconds: 300),
+          () => _otpFocus.requestFocus(),
+        );
+      } else {
+        _showMessage("Failed to send OTP. Please try again.", isError: true);
+      }
     } catch (e) {
-      _showError("Failed to send OTP: $e");
+      setState(() => _isLoading = false);
+      _showMessage("Error sending OTP: ${e.toString()}", isError: true);
     }
   }
 
-  Future<void> _verifyOTP() async {
-    if (_autoVerified) return;
+  Future<void> _verifyOTPAndLogin() async {
+    if (_isLoading) return;
 
     final otp = _otpController.text.trim();
     if (otp.length != 6) {
-      _showError("Enter the 6-digit OTP.");
+      _showMessage("Please enter the 6-digit OTP.", isError: true);
       return;
     }
 
-    if (_verificationId.isEmpty) {
-      _showError("Verification ID not found. Please request OTP again.");
-      return;
-    }
+    setState(() => _isLoading = true);
+    _showLoadingDialog();
 
-    final PhoneAuthCredential credential = PhoneAuthProvider.credential(
-      verificationId: _verificationId,
-      smsCode: otp,
-    );
+    final rawPhone = _phoneController.text.trim();
+    final phoneWithCode = "+91$rawPhone";
 
     try {
-      final userCred =
-          await FirebaseAuth.instance.signInWithCredential(credential);
-      if (userCred.user == null) {
-        throw Exception("Firebase user is null");
+      final response = await http.post(
+        Uri.parse("$backendUrl/api/auth/verify-otp"),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({
+          "phone": phoneWithCode,
+          "otp": otp,
+          "role": "driver",
+        }),
+      ).timeout(const Duration(seconds: 30));
+
+      if (mounted) Navigator.pop(context);
+      setState(() => _isLoading = false);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        
+        print("═══════════════════════════════════════════");
+        print("📋 FULL LOGIN RESPONSE:");
+        print(jsonEncode(data));
+        print("═══════════════════════════════════════════");
+        
+        if (data["firebaseToken"] != null) {
+          try {
+            await FirebaseAuth.instance.signInWithCustomToken(data["firebaseToken"]);
+            print("✅ Firebase sign-in successful");
+          } catch (e) {
+            debugPrint("❌ Firebase sign-in failed: $e");
+          }
+        }
+
+        final driverId = data["user"]["_id"];
+        final isNewUser = data["newUser"] == true;
+        final docsApproved = data["docsApproved"] == true;
+        
+        print("═══════════════════════════════════════════");
+        print("📋 EXTRACTING USER DATA:");
+        print("   Raw user object: ${data["user"]}");
+        print("   user['vehicleType']: ${data["user"]["vehicleType"]}");
+        print("   Type of vehicleType: ${data["user"]["vehicleType"]?.runtimeType}");
+        print("═══════════════════════════════════════════");
+        
+        String vehicleType = '';
+        
+        if (data["user"]["vehicleType"] != null) {
+          vehicleType = data["user"]["vehicleType"].toString().toLowerCase().trim();
+          print("✅ Vehicle type extracted: '$vehicleType'");
+        } else {
+          print("⚠️ WARNING: vehicleType is NULL in response!");
+        }
+        
+        print("═══════════════════════════════════════════");
+        print("📋 FINAL DRIVER DETAILS:");
+        print("   Driver ID: $driverId");
+        print("   Vehicle Type: '$vehicleType'");
+        print("   Vehicle Type Length: ${vehicleType.length}");
+        print("   Is Empty: ${vehicleType.isEmpty}");
+        print("   Is New User: $isNewUser");
+        print("   Docs Approved: $docsApproved");
+        print("═══════════════════════════════════════════");
+
+        // ✅ SAVE SESSION DATA PERSISTENTLY
+        final prefs = await SharedPreferences.getInstance();
+        
+        // Save all required data
+        await prefs.setString("driverId", driverId);
+        await prefs.setString("phoneNumber", rawPhone);
+        await prefs.setString("vehicleType", vehicleType);
+        await prefs.setBool("isLoggedIn", true);
+        await prefs.setInt("loginTimestamp", DateTime.now().millisecondsSinceEpoch);
+        
+        // Also save the login response for reference
+        await prefs.setString("lastLoginResponse", jsonEncode(data));
+        
+        // Verify the data was saved
+        final savedDriverId = prefs.getString("driverId");
+        final savedIsLoggedIn = prefs.getBool("isLoggedIn");
+        print("✅ Verification - Saved Driver ID: $savedDriverId");
+        print("✅ Verification - Saved isLoggedIn: $savedIsLoggedIn");
+        print("✅ Driver session saved successfully.");
+
+        if (isNewUser) {
+          print("🆕 New user - navigating to document upload");
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => DriverDocumentUploadPage(driverId: driverId),
+            ),
+          );
+        } else if (docsApproved) {
+          if (vehicleType.isEmpty) {
+            print("⚠️ CRITICAL: Vehicle type is EMPTY for approved driver!");
+            _showMessage(
+              "Please complete your vehicle registration first.",
+              isError: true,
+            );
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (_) => DriverDocumentUploadPage(driverId: driverId),
+              ),
+            );
+            return;
+          }
+          
+          print("🚗 Navigating to dashboard with vehicle type: '$vehicleType'");
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => DriverDashboardPage(
+                driverId: driverId,
+                vehicleType: vehicleType,
+              ),
+            ),
+          );
+        } else {
+          print("📄 Existing user with pending docs - navigating to review page");
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => DocumentsReviewPage(driverId: driverId),
+            ),
+          );
+        }
+      } else {
+        final errorData = jsonDecode(response.body);
+        print("❌ Login failed: ${errorData['message']}");
+        _showMessage(
+          errorData['message'] ?? "Login failed. Invalid OTP?",
+          isError: true,
+        );
       }
-      await _routeDriver(_phoneController.text.trim());
     } catch (e) {
-      if (FirebaseAuth.instance.currentUser != null) {
-        await _routeDriver(_phoneController.text.trim());
-        return;
-      }
-      _showError("Invalid OTP: ${e.toString()}");
+      if (mounted) Navigator.pop(context);
+      setState(() => _isLoading = false);
+      print("❌ Exception during login: $e");
+      _showMessage("An error occurred: ${e.toString()}", isError: true);
     }
+  }
+
+  Future<void> _resendOTP() async {
+    _showMessage("Resending OTP...", isError: false);
+    await _sendOTP();
   }
 
   void _showLoadingDialog() {
@@ -247,14 +316,14 @@ Future<void> _routeDriver(String phoneOnly) async {
       barrierDismissible: false,
       builder: (_) => Dialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        child: Padding(
-          padding: const EdgeInsets.all(24),
+        child: const Padding(
+          padding: EdgeInsets.all(24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
-            children: const [
+            children: [
               CircularProgressIndicator(),
               SizedBox(height: 16),
-              Text("Logging you in...", style: TextStyle(fontSize: 16)),
+              Text("Verifying...", style: TextStyle(fontSize: 16)),
             ],
           ),
         ),
@@ -262,11 +331,12 @@ Future<void> _routeDriver(String phoneOnly) async {
     );
   }
 
-  void _showError(String message) {
+  void _showMessage(String message, {required bool isError}) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message, textAlign: TextAlign.center),
-        backgroundColor: Colors.red[600],
+        backgroundColor: isError ? Colors.red[600] : Colors.green[600],
         behavior: SnackBarBehavior.floating,
         duration: const Duration(seconds: 3),
       ),
@@ -275,6 +345,26 @@ Future<void> _routeDriver(String phoneOnly) async {
 
   @override
   Widget build(BuildContext context) {
+    // Show loading spinner while checking session
+    if (_isCheckingSession) {
+      return const Scaffold(
+        backgroundColor: Color(0xFFF0F4FF),
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text(
+                'Checking session...',
+                style: TextStyle(fontSize: 16, color: Colors.grey),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       backgroundColor: const Color(0xFFF0F4FF),
       body: SafeArea(
@@ -293,13 +383,13 @@ Future<void> _routeDriver(String phoneOnly) async {
                 ),
               ),
               const SizedBox(height: 40),
-              const Text('Enter your mobile number',
-                  style: TextStyle(fontSize: 18)),
+              const Text('Enter your mobile number', style: TextStyle(fontSize: 18)),
               const SizedBox(height: 10),
               TextField(
                 controller: _phoneController,
                 keyboardType: TextInputType.phone,
                 maxLength: 10,
+                enabled: !_codeSent && !_isLoading,
                 inputFormatters: [
                   FilteringTextInputFormatter.digitsOnly,
                   LengthLimitingTextInputFormatter(10),
@@ -308,42 +398,66 @@ Future<void> _routeDriver(String phoneOnly) async {
                   prefixText: '+91 ',
                   hintText: '0000000000',
                   filled: true,
-                  fillColor: Colors.white.withOpacity(0.2),
+                  fillColor: Colors.white,
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: Colors.grey.shade300),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: Colors.grey.shade300),
                   ),
                   counterText: '',
                 ),
               ),
               const SizedBox(height: 20),
-              if (_codeSent)
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+              if (_codeSent) ...[
+                const Text('Enter OTP', style: TextStyle(fontSize: 18)),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: _otpController,
+                  focusNode: _otpFocus,
+                  keyboardType: TextInputType.number,
+                  maxLength: 6,
+                  enabled: !_isLoading,
+                  inputFormatters: [
+                    LengthLimitingTextInputFormatter(6),
+                    FilteringTextInputFormatter.digitsOnly,
+                  ],
+                  decoration: InputDecoration(
+                    hintText: '6-digit OTP',
+                    filled: true,
+                    fillColor: Colors.white,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: Colors.grey.shade300),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(color: Colors.grey.shade300),
+                    ),
+                    counterText: '',
+                  ),
+                  onSubmitted: (_) => _verifyOTPAndLogin(),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text('Enter OTP', style: TextStyle(fontSize: 18)),
-                    const SizedBox(height: 10),
-                    TextField(
-                      controller: _otpController,
-                      focusNode: _otpFocus,
-                      keyboardType: TextInputType.number,
-                      maxLength: 6,
-                      inputFormatters: [
-                        LengthLimitingTextInputFormatter(6),
-                        FilteringTextInputFormatter.digitsOnly,
-                      ],
-                      decoration: InputDecoration(
-                        hintText: '6-digit OTP',
-                        filled: true,
-                        fillColor: Colors.white.withOpacity(0.2),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        counterText: '',
-                      ),
+                    TextButton(
+                      onPressed: _isLoading
+                          ? null
+                          : () => setState(() => _codeSent = false),
+                      child: const Text('Change Number'),
+                    ),
+                    TextButton(
+                      onPressed: _isLoading ? null : _resendOTP,
+                      child: const Text('Resend OTP'),
                     ),
                   ],
                 ),
-              const SizedBox(height: 30),
+              ],
+              const SizedBox(height: 20),
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
@@ -351,9 +465,21 @@ Future<void> _routeDriver(String phoneOnly) async {
                     backgroundColor: const Color(0xFF1565C0),
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 16),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
                   ),
-                  onPressed: _codeSent ? _verifyOTP : _sendOTP,
-                  child: Text(_codeSent ? 'Verify OTP' : 'Send OTP'),
+                  onPressed: _isLoading ? null : (_codeSent ? _verifyOTPAndLogin : _sendOTP),
+                  child: _isLoading
+                      ? const SizedBox(
+                          height: 20,
+                          width: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                          ),
+                        )
+                      : Text(_codeSent ? 'Verify & Login' : 'Send OTP'),
                 ),
               ),
             ],
@@ -371,4 +497,3 @@ Future<void> _routeDriver(String phoneOnly) async {
     super.dispose();
   }
 }
-

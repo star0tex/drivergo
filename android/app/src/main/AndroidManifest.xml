@@ -12,6 +12,27 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
+    <!-- ✅ ADD THESE QUERIES -->
+    <queries>
+        <!-- Google Pay -->
+        <package android:name="com.google.android.apps.nbu.paisa.user" />
+        <!-- PhonePe -->
+        <package android:name="com.phonepe.app" />
+        <!-- Paytm -->
+        <package android:name="net.one97.paytm" />
+        <!-- Amazon Pay -->
+        <package android:name="in.amazon.mShop.android.shopping" />
+        <!-- BHIM -->
+        <package android:name="in.org.npci.upiapp" />
+        <!-- Other UPI apps -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="upi" />
+        </intent>
+    </queries>
+
+
+
     <application
         android:label="drivergoo"
         android:name="${applicationName}"
