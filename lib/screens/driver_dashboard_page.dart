@@ -1,5 +1,8 @@
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
+import '../services/background_service.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -14,6 +17,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import '../screens/chat_page.dart';
 import 'wallet_page.dart';
 import 'package:flutter/services.dart'; // ✅ ADD THIS LINE
+import 'package:flutter/foundation.dart'; // ✅ ADD THIS for kDebugMode
 
 // ✅ ADD YOUR THEME CLASSES HERE
 class AppColors {
@@ -91,8 +95,8 @@ class DriverDashboardPage extends StatefulWidget {
   _DriverDashboardPageState createState() => _DriverDashboardPageState();
 }
 
-class _DriverDashboardPageState extends State<DriverDashboardPage> {
-  final String apiBase = 'https://cd4ec7060b0b.ngrok-free.app';
+class _DriverDashboardPageState extends State<DriverDashboardPage> with WidgetsBindingObserver {
+  final String apiBase = 'https://e4784d33af60.ngrok-free.app';
   final DriverSocketService _socketService = DriverSocketService();
   String ridePhase = 'none';
   String? customerOtp;
@@ -114,6 +118,8 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
   LatLng? _customerPickup;
   Timer? _locationUpdateTimer;
   Timer? _cleanupTimer;
+  Timer? _heartbeatTimer;  // ✅ NEW
+
   final Set<String> _seenTripIds = {};
 
   final Set<Marker> _markers = {};
@@ -125,26 +131,613 @@ class _DriverDashboardPageState extends State<DriverDashboardPage> {
 bool isLoadingWallet = false;
 Map<String, dynamic>? todayEarnings;
 bool isLoadingToday = false;
-  @override
-  void initState() {
-    super.initState();
-    driverId = widget.driverId;
-    _requestLocationPermission();
-    _getCurrentLocation();
-    _initSocketAndFCM();
-      _fetchWalletData(); // ✅ ADD THIS LINE
+@override
+void initState() {
+  super.initState();
+  driverId = widget.driverId;
 
-  _fetchTodayEarnings(); // ✅ ADD THIS
+  TripBackgroundService.initializeService();
+  WidgetsBinding.instance.addObserver(this);
 
-    _cleanupTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
-      if (_seenTripIds.length > 100) {
-        final recentIds = _seenTripIds.toList().sublist(_seenTripIds.length - 50);
-        _seenTripIds.clear();
-        _seenTripIds.addAll(recentIds);
-        print("🧹 Cleaned up old trip IDs, kept ${_seenTripIds.length} recent ones");
-      }
+  _restoreDriverSessionAndInit();
+  
+  _cleanupTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
+    if (_seenTripIds.length > 100) {
+      final recentIds = _seenTripIds.toList().sublist(_seenTripIds.length - 50);
+      _seenTripIds.clear();
+      _seenTripIds.addAll(recentIds);
+      print("🧹 Cleaned up old trip IDs, kept ${_seenTripIds.length} recent ones");
+    }
+  });
+
+  // ✅ CHECK FOR ACTIVE TRIP AFTER INITIALIZATION
+  Future.microtask(() async {
+    await Future.delayed(const Duration(seconds: 2)); // Wait for socket connection
+    await _checkAndResumeActiveTrip();
+  });
+}
+
+Future<void> _restoreDriverSessionAndInit() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    // restore previous online state (default: false)
+    final savedOnline = prefs.getBool('isOnline') ?? false;
+    final savedAcceptsLong = prefs.getBool('acceptsLong') ?? false;
+    final savedVehicleType = prefs.getString('vehicleType') ?? widget.vehicleType;
+
+    setState(() {
+      isOnline = savedOnline;
+      acceptsLong = savedAcceptsLong;
     });
+
+    // Ensure vehicleType stays in sync (persisted may override)
+    // If you want widget.vehicleType immutable, skip setting it here
+    // but we'll keep it consistent in prefs.
+    await prefs.setString('vehicleType', savedVehicleType);
+
+    // Request location permissions and get initial location
+    await _requestLocationPermission();
+    await _getCurrentLocation();
+
+    // Initialize socket + FCM with restored isOnline & vehicle type
+    await _initSocketAndFCM();
+  } catch (e) {
+    print('⚠️ Failed to restore session: $e');
+    // fallback to normal init
+    await _requestLocationPermission();
+    await _getCurrentLocation();
+    await _initSocketAndFCM();
   }
+}
+
+Future<void> _checkAndResumeActiveTrip() async {
+  try {
+    print('');
+    print('=' * 70);
+    print('🔍 CHECKING FOR ACTIVE TRIP ON APP RESTART');
+    print('=' * 70);
+    
+    final response = await http.get(
+      Uri.parse('$apiBase/api/trip/driver/active/${widget.driverId}'),
+      headers: {'Content-Type': 'application/json'},
+    );
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      
+      if (data['success'] && data['hasActiveTrip']) {
+        print('⚠️ ACTIVE TRIP DETECTED - RESUMING');
+        
+        final tripData = data['trip'];
+        final customerData = data['customer'];
+        
+        print('   Trip ID: ${tripData['tripId']}');
+        print('   Status: ${tripData['status']}');
+        print('   RidePhase from backend: ${tripData['ridePhase']}');
+        
+        final String resumedPhase = tripData['ridePhase'] ?? 'going_to_pickup';
+        
+        // ✅ CRITICAL FIX: Check paymentCollected from API response first
+        final paymentCollected = tripData['paymentCollected'] ?? false;
+        
+        if (paymentCollected == true) {
+          print('');
+          print('✅ PAYMENT ALREADY COLLECTED - CLEANING UP');
+          print('   Trip ID: ${tripData['tripId']}');
+          print('   This is stale data from backend - clearing it now');
+          print('');
+          
+          // ✅ CRITICAL: Clear driver state on BACKEND
+          await _clearDriverStateOnBackend();
+          
+          // ✅ Clear local state
+          _clearActiveTrip();
+          
+          // ✅ Clear socket service
+          _socketService.setActiveTrip(null);
+          
+          // ✅ Stop any background services
+          await TripBackgroundService.stopTripService();
+          await WakelockPlus.disable();
+          
+          print('✅ Cleanup complete - driver is now FREE');
+          print('=' * 70);
+          print('');
+          
+          // Show success message
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Row(
+                  children: [
+                    Icon(Icons.check_circle, color: Colors.white),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'Ready for new trips!',
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                backgroundColor: AppColors.success,
+                duration: const Duration(seconds: 3),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          }
+          
+          return; // ✅ Exit - don't show any UI
+        }
+        
+        // ✅ ADDITIONAL CHECK: If phase is completed, double-verify
+        if (resumedPhase == 'completed') {
+          // Double-check with direct trip fetch
+          final verifyResponse = await http.get(
+            Uri.parse('$apiBase/api/trip/${tripData['tripId']}'),
+            headers: {'Content-Type': 'application/json'},
+          );
+          
+          if (verifyResponse.statusCode == 200) {
+            final verifyData = jsonDecode(verifyResponse.body);
+            
+            if (verifyData['success']) {
+              final actualTrip = verifyData['trip'];
+              
+              // ✅ Check if payment is already collected
+              if (actualTrip['paymentCollected'] == true) {
+                print('');
+                print('✅ PAYMENT ALREADY COLLECTED - CLEANING UP');
+                print('   Trip ID: ${tripData['tripId']}');
+                print('   This is stale data - clearing it now');
+                print('');
+                
+                // ✅ CRITICAL: Clear driver state on BACKEND
+                await _clearDriverStateOnBackend();
+                
+                // ✅ Clear local state
+                _clearActiveTrip();
+                
+                // ✅ Clear socket service
+                _socketService.setActiveTrip(null);
+                
+                // ✅ Stop any background services
+                await TripBackgroundService.stopTripService();
+                await WakelockPlus.disable();
+                
+                print('✅ Cleanup complete - driver is now FREE');
+                print('=' * 70);
+                print('');
+                
+                // Show success message
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Row(
+                        children: [
+                          Icon(Icons.check_circle, color: Colors.white),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'Ready for new trips!',
+                              style: GoogleFonts.plusJakartaSans(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      backgroundColor: AppColors.success,
+                      duration: const Duration(seconds: 3),
+                      behavior: SnackBarBehavior.floating,
+                    ),
+                  );
+                }
+                
+                return; // ✅ Exit - don't show collect cash button
+              }
+            }
+          }
+        }
+        
+        // ✅ If we reach here, trip is truly active - restore it
+        print('⚠️ Trip is TRULY ACTIVE - resuming');
+        
+        setState(() {
+          _activeTripId = tripData['tripId'];
+          ridePhase = resumedPhase;
+          customerOtp = tripData['rideCode'];
+          tripFareAmount = _parseDouble(tripData['fare']);
+          finalFareAmount = tripFareAmount;
+          
+          activeTripDetails = {
+            'tripId': tripData['tripId'],
+            'trip': {
+              'pickup': {
+                'lat': tripData['pickup']['lat'],
+                'lng': tripData['pickup']['lng'],
+                'address': tripData['pickup']['address'],
+              },
+              'drop': {
+                'lat': tripData['drop']['lat'],
+                'lng': tripData['drop']['lng'],
+                'address': tripData['drop']['address'],
+              },
+              'fare': tripData['fare'],
+            },
+            'customer': customerData,
+          };
+          
+          _customerPickup = LatLng(
+            tripData['pickup']['lat'],
+            tripData['pickup']['lng'],
+          );
+        });
+        
+        // ✅ Reconnect socket with active trip
+        _socketService.setActiveTrip(tripData['tripId']);
+        
+        // ✅ Restart background service
+        await TripBackgroundService.startTripService(
+          tripId: tripData['tripId'],
+          driverId: widget.driverId,
+          customerName: customerData?['name'] ?? 'Customer',
+        );
+        
+        await WakelockPlus.enable();
+        _startLiveLocationUpdates();
+        _startHeartbeat();
+        
+        if (ridePhase == 'going_to_pickup' || ridePhase == 'at_pickup') {
+          _drawRouteToCustomer();
+        }
+        
+        print('✅ Trip resumed successfully');
+        print('=' * 70);
+        print('');
+        
+        if (mounted) {
+          _showTripResumeDialog(tripData, customerData);
+        }
+      } else {
+        print('✅ No active trip found - driver is free');
+        
+        // ✅ Extra safety: Clear backend state just in case
+        await _clearDriverStateOnBackend();
+        
+        print('=' * 70);
+        print('');
+      }
+    } else {
+      print('⚠️ Failed to check active trip: ${response.statusCode}');
+    }
+  } catch (e) {
+    print('❌ Error checking active trip: $e');
+    print('Stack trace: ${StackTrace.current}');
+  }
+}
+
+// ✅ UPDATED: Complete _showTripResumeDialog function with cash collection handling
+
+void _showTripResumeDialog(Map<String, dynamic> tripData, Map<String, dynamic>? customerData) {
+  String phaseMessage = '';
+  IconData phaseIcon = Icons.local_taxi;
+  Color phaseColor = AppColors.primary;
+  
+  switch (ridePhase) {
+    case 'going_to_pickup':
+      phaseMessage = 'You were on your way to pick up the customer';
+      phaseIcon = Icons.navigation;
+      phaseColor = AppColors.primary;
+      break;
+    case 'at_pickup':
+      phaseMessage = 'You were at pickup location waiting to start the ride';
+      phaseIcon = Icons.location_on;
+      phaseColor = AppColors.warning;
+      break;
+    case 'going_to_drop':
+      phaseMessage = 'You were heading to drop location';
+      phaseIcon = Icons.flag;
+      phaseColor = AppColors.success;
+      break;
+    case 'completed':
+      // ✅ CRITICAL: Show urgent cash collection message
+      phaseMessage = 'Trip completed - PLEASE COLLECT CASH NOW!';
+      phaseIcon = Icons.payments;  // ✅ Money icon
+      phaseColor = AppColors.error;  // ✅ Red for urgency
+      break;
+    default:
+      phaseMessage = 'Resuming active trip';
+  }
+  
+  showDialog(
+    context: context,
+    barrierDismissible: ridePhase != 'completed', // ✅ Can't dismiss if awaiting cash
+    builder: (context) => WillPopScope(
+      onWillPop: () async => ridePhase != 'completed', // ✅ Prevent back button if awaiting cash
+      child: AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            Icon(phaseIcon, color: phaseColor, size: 28),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                ridePhase == 'completed' ? 'Collect Cash!' : 'Trip Resumed',
+                style: AppTextStyles.heading3.copyWith(
+                  color: ridePhase == 'completed' ? AppColors.error : null,
+                  fontWeight: ridePhase == 'completed' ? FontWeight.bold : FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                phaseMessage,
+                style: AppTextStyles.body1.copyWith(
+                  fontWeight: ridePhase == 'completed' ? FontWeight.bold : FontWeight.normal,
+                  color: ridePhase == 'completed' ? AppColors.error : null,
+                ),
+              ),
+              
+              // ✅ CRITICAL WARNING for completed trips
+              if (ridePhase == 'completed') ...[
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppColors.error.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppColors.error, width: 2),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.warning, color: AppColors.error, size: 24),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'You cannot accept new trips until you confirm cash collection!',
+                          style: AppTextStyles.body2.copyWith(
+                            color: AppColors.error,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+              
+              const SizedBox(height: 16),
+              Divider(color: AppColors.divider),
+              const SizedBox(height: 12),
+              
+              // Customer info
+              if (customerData != null) ...[
+                Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 20,
+                      backgroundImage: customerData['photoUrl'] != null
+                          ? NetworkImage(customerData['photoUrl'])
+                          : const AssetImage('assets/default_avatar.png') as ImageProvider,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            customerData['name'] ?? 'Customer',
+                            style: AppTextStyles.body1.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          Text(
+                            customerData['phone'] ?? '',
+                            style: AppTextStyles.caption,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+              ],
+              
+              // Trip details
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  children: [
+                    _buildResumeDetailRow(
+                      Icons.location_on,
+                      'Pickup',
+                      tripData['pickup']['address'] ?? 'Pickup Location',
+                    ),
+                    const SizedBox(height: 8),
+                    _buildResumeDetailRow(
+                      Icons.flag,
+                      'Drop',
+                      tripData['drop']['address'] ?? 'Drop Location',
+                    ),
+                    const SizedBox(height: 8),
+                    _buildResumeDetailRow(
+                      Icons.payments,
+                      'Fare',
+                      '₹${tripFareAmount?.toStringAsFixed(2) ?? '0.00'}',
+                      valueColor: ridePhase == 'completed' ? AppColors.error : AppColors.primary,
+                    ),
+                    if (customerOtp != null && ridePhase != 'completed') ...[
+                      const SizedBox(height: 8),
+                      _buildResumeDetailRow(
+                        Icons.lock,
+                        'Ride Code',
+                        customerOtp!,
+                        valueColor: AppColors.primary,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              
+              const SizedBox(height: 16),
+              
+              // Warning (only show for non-completed trips)
+              if (ridePhase != 'completed')
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppColors.warning.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppColors.warning),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.info_outline, color: AppColors.warning, size: 20),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'App will stay awake until trip is completed',
+                          style: AppTextStyles.caption.copyWith(
+                            color: AppColors.warning,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          if (ridePhase == 'completed')
+            // ✅ For completed trips, show ONLY collect cash button
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.pop(context);
+                  // Trigger cash collection immediately
+                  Future.delayed(const Duration(milliseconds: 300), () {
+                    _confirmCashCollection();
+                  });
+                },
+                icon: Icon(Icons.payments, size: 20),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.success,
+                  foregroundColor: AppColors.onPrimary,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                label: Text(
+                  'Collect ₹${tripFareAmount?.toStringAsFixed(2)} Now',
+                  style: AppTextStyles.button.copyWith(
+                    color: AppColors.onPrimary,
+                    fontSize: 16,
+                  ),
+                ),
+              ),
+            )
+          else
+            // For active trips, show continue button
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: phaseColor,
+                foregroundColor: AppColors.onPrimary,
+                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
+              ),
+              child: Text(
+                'Continue Trip',
+                style: AppTextStyles.button.copyWith(color: AppColors.onPrimary),
+              ),
+            ),
+        ],
+      ),
+    ),
+  );
+}
+
+// ✅ Helper function (keep as is)
+Widget _buildResumeDetailRow(IconData icon, String label, String value, {Color? valueColor}) {
+  return Row(
+    children: [
+      Icon(icon, size: 16, color: AppColors.onSurfaceSecondary),
+      const SizedBox(width: 8),
+      Text(
+        '$label:',
+        style: AppTextStyles.caption,
+      ),
+      const SizedBox(width: 8),
+      Expanded(
+        child: Text(
+          value,
+          style: AppTextStyles.body2.copyWith(
+            color: valueColor,
+            fontWeight: valueColor != null ? FontWeight.bold : FontWeight.normal,
+          ),
+          textAlign: TextAlign.right,
+        ),
+      ),
+    ],
+  );
+}
+
+Future<void> _checkForResumedTrip() async {
+  final hasActive = await _socketService.hasActiveTripOnRestart();
+  
+  if (hasActive) {
+    print('⚠️ Resuming from active trip!');
+    
+    // Show dialog to user
+    if (mounted) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          title: Row(
+            children: [
+              Icon(Icons.warning, color: AppColors.warning),
+              const SizedBox(width: 12),
+              Text('Active Trip Detected', style: AppTextStyles.heading3),
+            ],
+          ),
+          content: Text(
+            'You have an active trip in progress. Please complete it before going offline.',
+            style: AppTextStyles.body1,
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+              ),
+              child: Text('OK', style: AppTextStyles.button.copyWith(color: AppColors.onPrimary)),
+            ),
+          ],
+        ),
+      );
+    }
+  }
+}
 
  double? _parseDouble(dynamic v) {
   if (v == null) return null;
@@ -220,46 +813,139 @@ Future<void> _fetchWalletData() async {
   }
 }
 
-  Future<void> _sendLocationToBackend(double lat, double lng) async {
-    try {
-      await http.post(
-        Uri.parse('$apiBase/api/location/updateDriver'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'driverId': driverId,
-          'latitude': lat,
-          'longitude': lng,
-          'tripId': _activeTripId,
-        }),
-      );
-
-      _socketService.socket.emit('driver:location', {
-        'tripId': _activeTripId,
+ Future<void> _sendLocationToBackend(double lat, double lng) async {
+  try {
+    await http.post(
+      Uri.parse('$apiBase/api/location/updateDriver'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'driverId': driverId,
         'latitude': lat,
         'longitude': lng,
-      });
-    } catch (e) {
-      print('Error sending driver location: $e');
-    }
+        'tripId': _activeTripId,
+      }),
+    );
+
+    // persist last location for background service
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('lastLat', lat.toString());
+    await prefs.setString('lastLng', lng.toString());
+
+    _socketService.socket.emit('driver:location', {
+      'tripId': _activeTripId,
+      'latitude': lat,
+      'longitude': lng,
+    });
+  } catch (e) {
+    print('Error sending driver location: $e');
   }
+}
 
   Future<void> _initSocketAndFCM() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final persistedIsOnline = prefs.getBool('isOnline') ?? isOnline;
+    final persistedVehicleType = prefs.getString('vehicleType') ?? widget.vehicleType;
+
+    // fetch fcm token
     driverFcmToken = await FirebaseMessaging.instance.getToken();
-    final pos = await Geolocator.getCurrentPosition(
-      desiredAccuracy: LocationAccuracy.high,
-    );
-    setState(() {
-      _currentPosition = LatLng(pos.latitude, pos.longitude);
-    });
+
+    // get position if not already fetched
+    Position pos;
+    try {
+      pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      setState(() {
+        _currentPosition = LatLng(pos.latitude, pos.longitude);
+      });
+    } catch (e) {
+      print('⚠️ Could not get position: $e');
+      pos = Position(latitude: _currentPosition?.latitude ?? 0.0, longitude: _currentPosition?.longitude ?? 0.0, timestamp: DateTime.now(), accuracy: 0.0, altitude: 0.0, heading: 0.0, speed: 0.0, speedAccuracy: 0.0, altitudeAccuracy: 0.0, headingAccuracy: 0.0);
+    }
+
+    // Use persisted values for initial connection
+    isOnline = persistedIsOnline;
+    widget.vehicleType.toLowerCase();
+    await prefs.setString('vehicleType', persistedVehicleType);
 
     _socketService.connect(
       driverId,
       pos.latitude,
       pos.longitude,
-      vehicleType: widget.vehicleType,
+      vehicleType: persistedVehicleType,
       isOnline: isOnline,
       fcmToken: driverFcmToken,
     );
+_socketService.socket.on('trip:cancelled', (data) {
+  if (!mounted) return;
+  
+  print('');
+  print('=' * 70);
+  print('🚫 TRIP CANCELLED EVENT RECEIVED');
+  print('   Trip ID: ${data['tripId']}');
+  print('   Cancelled By: ${data['cancelledBy']}');
+  print('   Message: ${data['message']}');
+  print('=' * 70);
+  print('');
+  
+  final tripId = data['tripId']?.toString();
+  final cancelledBy = data['cancelledBy'] ?? 'unknown';
+  final message = data['message'] ?? 'Trip has been cancelled';
+  
+  // ✅ CRITICAL: Clear active trip if it matches
+  if (_activeTripId == tripId) {
+    setState(() {
+      _clearActiveTrip(); // Clear all trip-related state
+    });
+    
+    // ✅ Stop background service
+    TripBackgroundService.stopTripService();
+    WakelockPlus.disable();
+    
+    // ✅ Clear socket service active trip
+    _socketService.setActiveTrip(null);
+    
+    print('✅ Active trip cleared - driver is now free');
+  }
+  
+  // ✅ Close any open dialogs
+  if (Navigator.canPop(context)) {
+    Navigator.pop(context);
+  }
+  
+  // ✅ Show cancellation message
+  final displayMessage = cancelledBy == 'customer' 
+      ? 'Customer cancelled the trip'
+      : 'Trip has been cancelled';
+  
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Row(
+        children: [
+          Icon(Icons.cancel, color: Colors.white),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              displayMessage,
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: Colors.white,
+              ),
+            ),
+          ),
+        ],
+      ),
+      backgroundColor: AppColors.warning,
+      duration: const Duration(seconds: 4),
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
+    ),
+  );
+  
+  print('📢 Driver notified of cancellation');
+});
 
     _socketService.socket.on('trip:taken', (data) {
       print("🚫 Trip taken by another driver: $data");
@@ -336,7 +1022,28 @@ Future<void> _fetchWalletData() async {
       print("📥 [SOCKET-PRIMARY] trip:request received: $data");
       _handleIncomingTrip(data);
     });
-
+_socketService.socket.on('trip:expired', (data) {
+  print("⏰ Trip expired: $data");
+  if (mounted) {
+    final expiredTripId = data['tripId']?.toString();
+    
+    setState(() {
+      rideRequests.removeWhere((req) {
+        final id = (req['tripId'] ?? req['_id'])?.toString();
+        return id == expiredTripId;
+      });
+      
+      currentRide = rideRequests.isNotEmpty ? rideRequests.first : null;
+    });
+    
+    // Close popup if it's showing the expired trip
+    if (Navigator.canPop(context)) {
+      Navigator.pop(context);
+    }
+    
+    _stopNotificationSound();
+  }
+});
     _socketService.socket.on('tripRequest', (data) {
       print("📥 [SOCKET-PRIMARY] tripRequest received: $data (legacy)");
       _playNotificationSound();
@@ -395,8 +1102,10 @@ Future<void> _fetchWalletData() async {
             .showSnackBar(const SnackBar(content: Text('Ride cancelled.')));
       }
     };
+  } catch (e) {
+    print('❌ _initSocketAndFCM error: $e');
   }
-
+}
   void _handleIncomingTrip(dynamic rawData) {
     print("===========================================");
     print("🔥 Raw incoming trip DATA RECEIVED!");
@@ -514,19 +1223,70 @@ Future<void> _fetchWalletData() async {
     _showIncomingTripPopup(request);
   }
 
-  void _showIncomingTripPopup(Map<String, dynamic> request) {
-    final fare = request['fare'];
-    final fareAmount = fare != null ? _parseDouble(fare) : null;
-    
-    showModalBottomSheet(
-      context: context,
-      isDismissible: false,
-      backgroundColor: AppColors.background,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) {
-        return Padding(
+ void _showIncomingTripPopup(Map<String, dynamic> request) {
+  final fare = request['fare'];
+  final fareAmount = fare != null ? _parseDouble(fare) : null;
+  
+  // ✅ NEW: Auto-dismiss timer (Requirement #3)
+  Timer? autoDismissTimer;
+  
+  autoDismissTimer = Timer(const Duration(seconds: 10), () {
+    if (Navigator.canPop(context)) {
+      Navigator.pop(context);
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.white),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'You missed the order',
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: AppColors.error,
+          duration: const Duration(seconds: 3),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
+      );
+      
+      // Remove from request list
+      setState(() {
+        final tripId = request['tripId']?.toString() ?? request['_id']?.toString();
+        rideRequests.removeWhere((req) {
+          final id = (req['tripId'] ?? req['_id'])?.toString();
+          return id == tripId;
+        });
+        currentRide = rideRequests.isNotEmpty ? rideRequests.first : null;
+      });
+    }
+  });
+  
+  showModalBottomSheet(
+    context: context,
+    isDismissible: false,
+    backgroundColor: AppColors.background,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+    ),
+    builder: (context) {
+      return WillPopScope(
+        onWillPop: () async {
+          autoDismissTimer?.cancel();
+          return true;
+        },
+        child: Padding(
           padding: const EdgeInsets.all(20),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -537,6 +1297,14 @@ Future<void> _fetchWalletData() async {
                   Icon(Icons.local_taxi, color: AppColors.primary, size: 28),
                   const SizedBox(width: 10),
                   Text("New Ride Request", style: AppTextStyles.heading3),
+                  const Spacer(),
+                  // ✅ NEW: Countdown timer display
+                  _CountdownTimer(
+                    duration: const Duration(seconds: 10),
+                    onComplete: () {
+                      autoDismissTimer?.cancel();
+                    },
+                  ),
                 ],
               ),
               const SizedBox(height: 16),
@@ -574,6 +1342,7 @@ Future<void> _fetchWalletData() async {
                       padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
                     ),
                     onPressed: () {
+                      autoDismissTimer?.cancel();
                       Navigator.pop(context);
                       rejectRide();
                     },
@@ -587,6 +1356,7 @@ Future<void> _fetchWalletData() async {
                       padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
                     ),
                     onPressed: () {
+                      autoDismissTimer?.cancel();
                       Navigator.pop(context);
                       acceptRide();
                     },
@@ -596,11 +1366,13 @@ Future<void> _fetchWalletData() async {
               ),
             ],
           ),
-        );
-      },
-    );
-  }
-
+        ),
+      );
+    },
+  ).whenComplete(() {
+    autoDismissTimer?.cancel();
+  });
+}
   void _playNotificationSound() async {
     await _audioPlayer.play(AssetSource('sounds/notification.mp3'));
   }
@@ -707,7 +1479,10 @@ Future<void> _fetchWalletData() async {
           ridePhase = 'going_to_drop';
           otpController.clear();
         });
-        
+        // ✅ NEW: Immediate location update when ride starts
+if (_currentPosition != null) {
+  _sendLocationToBackend(_currentPosition!.latitude, _currentPosition!.longitude);
+}
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: const Text('Ride started! Navigate to drop location'),
@@ -727,22 +1502,54 @@ Future<void> _fetchWalletData() async {
     }
   }
 
-  void _clearActiveTrip() {
-    setState(() {
-      activeTripDetails = null;
-      _polylines.clear();
-      _markers.clear();
-      _customerPickup = null;
-      _activeTripId = null;
-      ridePhase = 'none';
-      customerOtp = null;
-      finalFareAmount = null;
-      tripFareAmount = null;
-      otpController.clear();
-    });
-    _locationUpdateTimer?.cancel();
-    print('🧹 Cleared active trip from state. UI returned to dashboard.');
-  }
+ void _clearActiveTrip() {
+  print('');
+  print('=' * 70);
+  print('🧹 CLEARING ACTIVE TRIP STATE');
+  print('=' * 70);
+  
+  setState(() {
+    // Clear trip details
+    activeTripDetails = null;
+    _activeTripId = null;
+    
+    // Reset ride phase
+    ridePhase = 'none';
+    
+    // Clear customer info
+    customerOtp = null;
+    _customerPickup = null;
+    
+    // Clear fare info
+    finalFareAmount = null;
+    tripFareAmount = null;
+    
+    // Clear UI elements
+    _polylines.clear();
+    _markers.clear();
+    
+    // Clear OTP input
+    otpController.clear();
+  });
+  
+  // Stop timers
+  _locationUpdateTimer?.cancel();
+  _locationUpdateTimer = null;
+  
+  _heartbeatTimer?.cancel();
+  _heartbeatTimer = null;
+  
+  // Clear socket service
+  _socketService.setActiveTrip(null);
+  
+  print('✅ All trip state cleared');
+  print('   - activeTripDetails: null');
+  print('   - ridePhase: none');
+  print('   - _activeTripId: null');
+  print('   - Timers: stopped');
+  print('=' * 70);
+  print('');
+}
 
   Future<void> _completeRideNew() async {
     if (_activeTripId == null || _currentPosition == null) return;
@@ -792,164 +1599,199 @@ Future<void> _fetchWalletData() async {
     }
   }
 
-  Future<void> _confirmCashCollection() async {
-    if (_activeTripId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No active trip found')),
-      );
-      return;
+  void _startHeartbeat() {
+  _heartbeatTimer?.cancel();
+  _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+    if (_activeTripId != null) {
+      _socketService.socket.emit('driver:heartbeat', {
+        'tripId': _activeTripId,
+        'driverId': widget.driverId,
+        'timestamp': DateTime.now().toIso8601String(),
+      });
+      print('💓 Heartbeat sent for trip $_activeTripId');
     }
+  });
+}
 
-    if (tripFareAmount == null || tripFareAmount! <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Trip fare not available. Please try again.')),
-      );
-      return;
-    }
+void _stopHeartbeat() {
+  _heartbeatTimer?.cancel();
+  _heartbeatTimer = null;
+}
 
-    try {
-      print('💰 Confirming cash collection:');
-      print('   Trip ID: $_activeTripId');
-      print('   Driver ID: $driverId');
-      print('   Fare: ₹$tripFareAmount');
+Future<void> _confirmCashCollection() async {
+  if (_activeTripId == null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('No active trip found')),
+    );
+    return;
+  }
 
-      final response = await http.post(
-        Uri.parse('$apiBase/api/wallet/collect-cash'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'tripId': _activeTripId,
-          'driverId': driverId,
-          'fare': tripFareAmount,
-        }),
-      );
+  if (tripFareAmount == null || tripFareAmount! <= 0) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Trip fare not available. Please try again.')),
+    );
+    return;
+  }
 
-      final data = jsonDecode(response.body);
+  try {
+    print('💰 Confirming cash collection:');
+    print('   Trip ID: $_activeTripId');
+    print('   Driver ID: $driverId');
+    print('   Fare: ₹$tripFareAmount');
+
+    final response = await http.post(
+      Uri.parse('$apiBase/api/trip/confirm-cash'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'tripId': _activeTripId,
+        'driverId': driverId,
+        'fare': tripFareAmount,
+      }),
+    );
+
+    final data = jsonDecode(response.body);
+    
+    print('🔥 Cash collection response: $data');
+    
+    if (response.statusCode == 200 && data['success']) {
+      // ✅ Clear socket service active trip
+      _socketService.setActiveTrip(null);
       
-      print('📥 Cash collection response: $data');
+      // ✅ STOP BACKGROUND SERVICE
+      await TripBackgroundService.stopTripService();
+      await WakelockPlus.disable();
       
-      if (response.statusCode == 200 && data['success']) {
-        final fareBreakdown = data['fareBreakdown'];
-        final walletInfo = data['wallet'];
-        
-        await showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (context) => AlertDialog(
-            backgroundColor: AppColors.background,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-            title: Row(
-              children: [
-                Icon(Icons.check_circle, color: AppColors.success, size: 32),
-                const SizedBox(width: 12),
-                Expanded(child: Text('Cash Collected ✅', style: AppTextStyles.heading3)),
-              ],
-            ),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Divider(color: AppColors.divider),
-                  _buildFareRow('Trip Fare', fareBreakdown['tripFare'], bold: true),
-                  const SizedBox(height: 8),
-                  _buildFareRow(
-                    'Platform Commission (${fareBreakdown['commissionPercentage']}%)',
-                    fareBreakdown['commission'],
-                    isNegative: true,
-                    color: AppColors.warning,
-                  ),
-                  Divider(thickness: 2, color: AppColors.divider),
-                  _buildFareRow(
-                    'Your Earning',
-                    fareBreakdown['driverEarning'],
-                    bold: true,
-                    color: AppColors.success,
-                  ),
-                  const SizedBox(height: 16),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: AppColors.primary.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: AppColors.primary.withOpacity(0.3)),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Wallet Summary', style: AppTextStyles.body1),
-                        const SizedBox(height: 8),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text('Total Earnings:', style: AppTextStyles.body2),
-                            Text(
-                              '₹${walletInfo['totalEarnings'].toStringAsFixed(2)}',
-                              style: AppTextStyles.body1,
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text('Pending Commission:', style: AppTextStyles.body2),
-                            Text(
-                              '₹${walletInfo['pendingAmount'].toStringAsFixed(2)}',
-                              style: AppTextStyles.body1.copyWith(color: AppColors.warning),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () {
-                  Navigator.pop(context);
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => WalletPage(driverId: driverId),
-                    ),
-                  );
-                },
-                child: Text('View Wallet', style: AppTextStyles.button.copyWith(color: AppColors.primary)),
-              ),
-              ElevatedButton(
-                onPressed: () {
-                  Navigator.pop(context);
-                  _clearActiveTrip();
-    _fetchWalletData(); // ✅ FIXED - Refresh wallet data
-    _fetchTodayEarnings(); // ✅ ADD THIS to refresh today's earnings
-
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Ready for next ride!')),
-                  );
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.success,
-                  foregroundColor: AppColors.onPrimary,
-                ),
-                child: Text('Done', style: AppTextStyles.button.copyWith(color: AppColors.onPrimary)),
-              ),
+      print('🔕 Background service stopped - app can sleep now');
+      
+      final fareBreakdown = data['fareBreakdown'];
+      final walletInfo = data['wallet'];
+      
+      await showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          backgroundColor: AppColors.background,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Row(
+            children: [
+              Icon(Icons.check_circle, color: AppColors.success, size: 32),
+              const SizedBox(width: 12),
+              Expanded(child: Text('Cash Collected ✅', style: AppTextStyles.heading3)),
             ],
           ),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(data['message'] ?? 'Failed to confirm cash collection')),
-        );
-      }
-    } catch (e) {
-      print('❌ Error confirming cash: $e');
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Divider(color: AppColors.divider),
+                _buildFareRow('Trip Fare', fareBreakdown['tripFare'], bold: true),
+                const SizedBox(height: 8),
+                _buildFareRow(
+                  'Platform Commission (${fareBreakdown['commissionPercentage']}%)',
+                  fareBreakdown['commission'],
+                  isNegative: true,
+                  color: AppColors.warning,
+                ),
+                Divider(thickness: 2, color: AppColors.divider),
+                _buildFareRow(
+                  'Your Earning',
+                  fareBreakdown['driverEarning'],
+                  bold: true,
+                  color: AppColors.success,
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppColors.primary.withOpacity(0.3)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Wallet Summary', style: AppTextStyles.body1),
+                      const SizedBox(height: 8),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text('Total Earnings:', style: AppTextStyles.body2),
+                          Text(
+                            '₹${walletInfo['totalEarnings'].toStringAsFixed(2)}',
+                            style: AppTextStyles.body1,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text('Pending Commission:', style: AppTextStyles.body2),
+                          Text(
+                            '₹${walletInfo['pendingAmount'].toStringAsFixed(2)}',
+                            style: AppTextStyles.body1.copyWith(color: AppColors.warning),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => WalletPage(driverId: driverId),
+                  ),
+                );
+              },
+              child: Text('View Wallet', style: AppTextStyles.button.copyWith(color: AppColors.primary)),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(context);
+                
+                // ✅ CRITICAL: Clear all trip state
+                _clearActiveTrip();
+                
+                // ✅ Refresh wallet data
+                _fetchWalletData();
+                _fetchTodayEarnings();
+
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Ready for next ride!'),
+                    backgroundColor: Colors.green,
+                  ),
+                );
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.success,
+                foregroundColor: AppColors.onPrimary,
+              ),
+              child: Text('Done', style: AppTextStyles.button.copyWith(color: AppColors.onPrimary)),
+            ),
+          ],
+        ),
+      );
+    } else {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e')),
+        SnackBar(content: Text(data['message'] ?? 'Failed to confirm cash collection')),
       );
     }
+  } catch (e) {
+    print('❌ Error confirming cash: $e');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Error: $e')),
+    );
   }
+}
 
   void _stopNotificationSound() async {
     await _audioPlayer.stop();
@@ -1032,64 +1874,82 @@ Future<void> _fetchWalletData() async {
     });
   }
 
-  void acceptRide() async {
-    if (currentRide == null) return;
+void acceptRide() async {
+  if (currentRide == null) return;
 
-    _stopNotificationSound();
+  _stopNotificationSound();
 
-    final String? tripId =
-        (currentRide!['tripId'] ?? currentRide!['_id'])?.toString();
-    if (tripId == null || tripId.isEmpty) {
-      print('❌ No tripId found in currentRide: $currentRide');
-      return;
-    }
+  final String? tripId = (currentRide!['tripId'] ?? currentRide!['_id'])?.toString();
+  if (tripId == null || tripId.isEmpty) {
+    print('❌ No tripId found in currentRide: $currentRide');
+    return;
+  }
 
-    final fare = currentRide!['fare'];
-    final fareAmount = fare != null ? _parseDouble(fare) : null;
+  final fare = currentRide!['fare'];
+  final fareAmount = fare != null ? _parseDouble(fare) : null;
 
-    print('✅ Driver accepting ride: $tripId with fare: $fareAmount');
+  print('✅ Driver accepting ride: $tripId with fare: $fareAmount');
 
-    try {
-      _socketService.socket.emit('driver:accept_trip', {
-        'tripId': tripId,
-        'driverId': driverId,
-      });
-    } catch (e) {
-      print('❌ Error emitting driver:accept_trip: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Accept failed: $e')),
-        );
-      }
-      return;
-    }
-
-    setState(() {
-      _activeTripId = tripId;
-      ridePhase = 'going_to_pickup';
-      tripFareAmount = fareAmount;
-      finalFareAmount = fareAmount;
+  try {
+    _socketService.socket.emit('driver:accept_trip', {
+      'tripId': tripId,
+      'driverId': driverId,
     });
-
+    
+    // ✅ Mark trip as active
+    _socketService.setActiveTrip(tripId);
+    
+    // ✅ START BACKGROUND SERVICE
+    await TripBackgroundService.startTripService(
+      tripId: tripId,
+      driverId: driverId,
+      customerName: 'Customer', // Get from activeTripDetails if available
+    );
+    
+    // ✅ Enable wake lock
+    await WakelockPlus.enable();
+    
+    print('🔒 Background service started - app will stay alive');
+    
+  } catch (e) {
+    print('❌ Error emitting driver:accept_trip: $e');
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Ride Accepted! Click 'Go to Pickup' to start")),
+        SnackBar(content: Text('Accept failed: $e')),
       );
     }
-
-    setState(() {
-      rideRequests.removeWhere((req) {
-        final id = (req['tripId'] ?? req['_id'])?.toString();
-        return id == tripId;
-      });
-      currentRide = rideRequests.isNotEmpty ? rideRequests.first : null;
-      if (currentRide != null) _playNotificationSound();
-    });
+    return;
   }
+
+  setState(() {
+    _activeTripId = tripId;
+    ridePhase = 'going_to_pickup';
+    tripFareAmount = fareAmount;
+    finalFareAmount = fareAmount;
+  });
+
+  _startHeartbeat();
+
+  if (mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text("Ride Accepted! App will stay alive in background")),
+    );
+  }
+
+  setState(() {
+    rideRequests.removeWhere((req) {
+      final id = (req['tripId'] ?? req['_id'])?.toString();
+      return id == tripId;
+    });
+    currentRide = rideRequests.isNotEmpty ? rideRequests.first : null;
+    if (currentRide != null) _playNotificationSound();
+  });
+}
 
   void _startLiveLocationUpdates() {
     _locationUpdateTimer?.cancel();
-    _locationUpdateTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
+    
+    _locationUpdateTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
       if (_currentPosition == null) return;
       final pos = await Geolocator.getCurrentPosition();
       _currentPosition = LatLng(pos.latitude, pos.longitude);
@@ -1105,7 +1965,7 @@ Future<void> _fetchWalletData() async {
       'https://maps.googleapis.com/maps/api/directions/json'
       '?origin=${_currentPosition!.latitude},${_currentPosition!.longitude}'
       '&destination=${_customerPickup!.latitude},${_customerPickup!.longitude}'
-      '&key=AIzaSyCqfjktNhxjKfM-JmpSwBk9KtgY429QWY8',
+      '&key=AIzaSyB7VstS4RZlou2jyNgzkKePGqNbs2MyzYY',
     );
 
     List<LatLng> polylinePoints = [];
@@ -1186,17 +2046,71 @@ Future<void> _fetchWalletData() async {
       ),
     );
   }
-
-  @override
-  void dispose() {
-    otpController.dispose();
-    _cleanupTimer?.cancel();
-    _locationUpdateTimer?.cancel();
-    _mapController?.dispose();
-    _socketService.disconnect();
-    _stopNotificationSound();
-    super.dispose();
+@override
+void didChangeAppLifecycleState(AppLifecycleState state) {
+  print('📱 App lifecycle changed: $state');
+  
+  switch (state) {
+    case AppLifecycleState.paused:
+      print('⏸️ App paused');
+      if (_socketService.hasActiveTrip) {
+        print('🔒 Keeping socket alive - active trip in progress');
+      }
+      break;
+      
+    case AppLifecycleState.resumed:
+      print('▶️ App resumed');
+      
+      // Reconnect socket if needed
+      if (!_socketService.isConnected) {
+        print('🔄 Reconnecting socket...');
+        _initSocketAndFCM();
+      }
+      
+      // Refresh location
+      _getCurrentLocation();
+      
+      // ✅ CHECK FOR ACTIVE TRIP ON RESUME
+      Future.delayed(const Duration(seconds: 1), () {
+        _checkAndResumeActiveTrip();
+      });
+      break;
+      
+    case AppLifecycleState.inactive:
+      print('💤 App inactive');
+      break;
+      
+    case AppLifecycleState.detached:
+      print('🚪 App detached');
+      break;
+      
+    default:
+      break;
   }
+}
+
+
+@override
+void dispose() {
+  otpController.dispose();
+
+  _cleanupTimer?.cancel();
+  _locationUpdateTimer?.cancel();
+  _heartbeatTimer?.cancel();
+  _mapController?.dispose();
+  _stopNotificationSound();
+
+  // Only disconnect socket if no active trip (socket service already handles this guard)
+  if (!_socketService.hasActiveTrip) {
+    _socketService.disconnect();
+    print('🔴 Socket disconnected - no active trip');
+  } else {
+    print('⚠️ Socket kept alive - active trip in progress');
+  }
+
+  WidgetsBinding.instance.removeObserver(this);
+  super.dispose();
+}
 
   void rejectRide() {
     if (currentRide == null) return;
@@ -1248,17 +2162,37 @@ Future<void> _fetchWalletData() async {
                 value: isOnline,
                 activeColor: AppColors.primary,
                 inactiveThumbColor: AppColors.onSurfaceSecondary,
-                onChanged: (value) async {
-                  setState(() => isOnline = value);
-                  if (!isOnline) {
-                    setState(() => acceptsLong = false);
-                  }
-                  
-                  await Future.delayed(const Duration(milliseconds: 100));
-                  _updateDriverStatusSocket();
-                  
-                  print('📘 Switch changed: ${value ? 'ONLINE' : 'OFFLINE'}');
-                },
+               onChanged: (value) async {
+  // If driver has an active trip, prevent going offline
+  if (!value && _socketService.hasActiveTrip) {
+    // revert switch and show message
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Cannot go offline while a trip is active. Complete the trip first.'),
+        backgroundColor: Colors.orange,
+      ),
+    );
+    // ensure UI reflects actual state (still online)
+    setState(() => isOnline = true);
+    return;
+  }
+
+  setState(() => isOnline = value);
+
+  // persist the state
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.setBool('isOnline', isOnline);
+
+  // also persist acceptsLong if applicable
+  // (acceptsLong change handled in drawer toggle; save there too)
+
+  // Ask socket to update driver status
+  await Future.delayed(const Duration(milliseconds: 100));
+  _updateDriverStatusSocket();
+
+  print('📘 Switch changed: ${value ? 'ONLINE' : 'OFFLINE'}');
+},
+
               ),
           ],
         ),
@@ -1763,7 +2697,28 @@ Future<void> _payCommissionViaUPI() async {
     _showManualPaymentDialog(upiId, pendingAmount);
   }
 }
+Future<void> _clearDriverStateOnBackend() async {
+  try {
+    print('🧹 Clearing driver state on backend...');
+    
+    final response = await http.post(
+      Uri.parse('$apiBase/api/driver/clear-state'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'driverId': widget.driverId,
+      }),
+    );
 
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      if (data['success']) {
+        print('✅ Backend state cleared successfully');
+      }
+    }
+  } catch (e) {
+    print('⚠️ Error clearing backend state: $e');
+  }
+}
 void _showPaymentConfirmationDialog(double amount) {
   showDialog(
     context: context,
@@ -2184,11 +3139,14 @@ void _showManualPaymentDialog(String upiId, double amount) {
                 activeColor: AppColors.primary,
                 value: acceptsLong,
                 onChanged: isOnline
-                    ? (value) {
-                        setState(() => acceptsLong = value);
-                        _updateDriverStatusSocket();
-                      }
-                    : null,
+    ? (value) async {
+        setState(() => acceptsLong = value);
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('acceptsLong', acceptsLong);
+        _updateDriverStatusSocket();
+      }
+    : null,
+
               ),
             ),
         ],
@@ -2211,21 +3169,32 @@ void _showManualPaymentDialog(String upiId, double amount) {
     );
   }
 
-  void _updateDriverStatusSocket() {
-    final lat = _currentPosition?.latitude ?? 0.0;
-    final lng = _currentPosition?.longitude ?? 0.0;
+  void _updateDriverStatusSocket() async {
+  final lat = _currentPosition?.latitude ?? 0.0;
+  final lng = _currentPosition?.longitude ?? 0.0;
 
-    _socketService.updateDriverStatus(
-      driverId,
-      isOnline,
-      lat,
-      lng,
-      widget.vehicleType,
-      fcmToken: driverFcmToken,
-    );
+  // persist online/offline flag
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.setString('lastLat', lat.toString());
+await prefs.setString('lastLng', lng.toString());
+  await prefs.setBool('isOnline', isOnline);
 
-    print('🚗 Driver status updated: ${isOnline ? 'ONLINE' : 'OFFLINE'}');
-  }
+  // persist vehicleType & acceptsLong (if changed somewhere)
+  await prefs.setString('vehicleType', widget.vehicleType);
+  await prefs.setBool('acceptsLong', acceptsLong);
+
+  _socketService.updateDriverStatus(
+    driverId,
+    isOnline,
+    lat,
+    lng,
+    widget.vehicleType,
+    fcmToken: driverFcmToken,
+    profileData: null,
+  );
+
+  print('🚗 Driver status updated: ${isOnline ? 'ONLINE' : 'OFFLINE'}');
+}
 
   
   Widget buildEarningsCard() {
@@ -2626,3 +3595,85 @@ Widget _buildEarningsBreakdownItem(
     ),
   );
 }}
+class _CountdownTimer extends StatefulWidget {
+  final Duration duration;
+  final VoidCallback onComplete;
+
+  const _CountdownTimer({
+    Key? key,
+    required this.duration,
+    required this.onComplete,
+  }) : super(key: key);
+
+  @override
+  _CountdownTimerState createState() => _CountdownTimerState();
+}
+
+class _CountdownTimerState extends State<_CountdownTimer> {
+  late int _secondsRemaining;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _secondsRemaining = widget.duration.inSeconds;
+    _startTimer();
+  }
+
+  void _startTimer() {
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_secondsRemaining > 0) {
+        setState(() {
+          _secondsRemaining--;
+        });
+      } else {
+        timer.cancel();
+        widget.onComplete();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    TripBackgroundService.stopTripService();
+  WakelockPlus.disable();
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: _secondsRemaining <= 3 
+            ? AppColors.error.withOpacity(0.2) 
+            : AppColors.warning.withOpacity(0.2),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: _secondsRemaining <= 3 ? AppColors.error : AppColors.warning,
+          width: 2,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.timer,
+            color: _secondsRemaining <= 3 ? AppColors.error : AppColors.warning,
+            size: 16,
+          ),
+          const SizedBox(width: 4),
+          Text(
+            '${_secondsRemaining}s',
+            style: AppTextStyles.caption.copyWith(
+              color: _secondsRemaining <= 3 ? AppColors.error : AppColors.warning,
+              fontWeight: FontWeight.bold,
+              fontSize: 14,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

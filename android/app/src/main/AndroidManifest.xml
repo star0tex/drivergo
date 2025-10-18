@@ -11,27 +11,29 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
-    <!-- ✅ ADD THESE QUERIES -->
+    <!-- ✅ Single <queries> block -->
     <queries>
-        <!-- Google Pay -->
+        <!-- UPI payment apps -->
         <package android:name="com.google.android.apps.nbu.paisa.user" />
-        <!-- PhonePe -->
         <package android:name="com.phonepe.app" />
-        <!-- Paytm -->
         <package android:name="net.one97.paytm" />
-        <!-- Amazon Pay -->
         <package android:name="in.amazon.mShop.android.shopping" />
-        <!-- BHIM -->
         <package android:name="in.org.npci.upiapp" />
-        <!-- Other UPI apps -->
+        <!-- UPI intent -->
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="upi" />
         </intent>
+        <!-- Text sharing intent -->
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT" />
+            <data android:mimeType="text/plain" />
+        </intent>
     </queries>
-
-
 
     <application
         android:label="drivergoo"
@@ -41,8 +43,12 @@
         <!-- ✅ Google Maps API Key -->
         <meta-data
             android:name="com.google.android.geo.API_KEY"
-            android:value="AIzaSyCqfjktNhxjKfM-JmpSwBk9KtgY429QWY8" />
+            android:value="AIzaSyB7VstS4RZlou2jyNgzkKePGqNbs2MyzYY" />
 
+        <!-- ✅ Background service -->
+     
+        <!-- ✅ Razorpay checkout -->
+      
         <!-- ✅ Main Activity -->
         <activity
             android:name=".MainActivity"
@@ -52,8 +58,9 @@
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
-            android:windowSoftInputMode="adjustResize">
-
+            android:windowSoftInputMode="adjustResize"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true">
             <!-- Theme while Flutter loads -->
             <meta-data
                 android:name="io.flutter.embedding.android.NormalTheme"
@@ -66,32 +73,15 @@
             </intent-filter>
         </activity>
 
-        <!-- ✅ Firebase Messaging Service -->
-        <service
-            android:name="com.google.firebase.messaging.FirebaseMessagingService"
-            android:exported="true"
-            tools:replace="android:exported">
-            <intent-filter>
-                <action android:name="com.google.firebase.MESSAGING_EVENT" />
-            </intent-filter>
-        </service>
-
         <!-- ✅ Notification Channel Meta -->
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
             android:value="default_channel_id" />
 
-        <!-- Required by Flutter plugins -->
+        <!-- ✅ Required by Flutter plugins -->
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
     </application>
 
-    <!-- ✅ Used by Flutter for text sharing -->
-    <queries>
-        <intent>
-            <action android:name="android.intent.action.PROCESS_TEXT" />
-            <data android:mimeType="text/plain" />
-        </intent>
-    </queries>
 </manifest>

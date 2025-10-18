@@ -1,9 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'dart:io';
+import 'package:drivergoo/services/background_service.dart';
 
 import 'firebase_options.dart'; // ✅ This must be here!
 import 'package:drivergoo/screens/driver_login_page.dart';
+Future<void> requestBatteryOptimizationExemption() async {
+  if (Platform.isAndroid) {
+    await Permission.ignoreBatteryOptimizations.request();
+  }
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -13,7 +21,10 @@ void main() async {
   );
 
   await FirebaseMessaging.instance.requestPermission();
-
+ await TripBackgroundService.initializeService();
+  
+  // ✅ Request battery exemption
+  await requestBatteryOptimizationExemption();
   runApp(const IndianRideDriverApp());
 }
 

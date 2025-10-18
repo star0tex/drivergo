@@ -2,10 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'package:url_launcher/url_launcher.dart';
-import 'package:flutter/services.dart';
-import 'package:image_picker/image_picker.dart';
-import 'dart:io';
+import 'package:razorpay_flutter/razorpay_flutter.dart';
 
 class WalletPage extends StatefulWidget {
   final String driverId;
@@ -17,18 +14,75 @@ class WalletPage extends StatefulWidget {
 }
 
 class _WalletPageState extends State<WalletPage> {
-  final String apiBase = 'https://cd4ec7060b0b.ngrok-free.app';
+  final String apiBase = 'https://e4784d33af60.ngrok-free.app';
   
   Map<String, dynamic>? walletData;
   List<dynamic> transactions = [];
   List<dynamic> paymentProofs = [];
   bool isLoading = true;
+  bool isProcessingPayment = false;
+  
+  late Razorpay _razorpay;
 
   @override
   void initState() {
     super.initState();
+    _initializeRazorpay();
     _fetchWalletData();
     _fetchPaymentProofs();
+  }
+
+  void _initializeRazorpay() {
+    _razorpay = Razorpay();
+    _razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS, _handlePaymentSuccess);
+    _razorpay.on(Razorpay.EVENT_PAYMENT_ERROR, _handlePaymentError);
+    _razorpay.on(Razorpay.EVENT_EXTERNAL_WALLET, _handleExternalWallet);
+  }
+
+  @override
+  void dispose() {
+    _razorpay.clear();
+    super.dispose();
+  }
+
+  void _handlePaymentSuccess(PaymentSuccessResponse response) {
+    print('✅ Payment Success: ${response.paymentId}');
+    
+    // Verify payment with backend
+    _verifyPaymentWithBackend(
+      response.paymentId ?? '',
+      response.orderId ?? '',
+      response.signature ?? '',
+    );
+  }
+
+  void _handlePaymentError(PaymentFailureResponse response) {
+    print('❌ Payment Error: ${response.code} - ${response.message}');
+    
+    setState(() => isProcessingPayment = false);
+    
+    // Show user-friendly error message
+    String errorMessage = 'Payment failed';
+    
+    if (response.code == Razorpay.PAYMENT_CANCELLED) {
+      errorMessage = 'Payment cancelled by user';
+    } else if (response.code == Razorpay.NETWORK_ERROR) {
+      errorMessage = 'Network error. Please check your connection';
+    } else if (response.message != null) {
+      errorMessage = response.message!;
+    }
+    
+    _showSnackBar(errorMessage, isError: true, icon: Icons.error);
+  }
+
+  void _handleExternalWallet(ExternalWalletResponse response) {
+    print('📱 External Wallet: ${response.walletName}');
+    
+    _showSnackBar(
+      'Redirecting to ${response.walletName}...',
+      backgroundColor: Colors.blue,
+      icon: Icons.account_balance_wallet,
+    );
   }
 
   Future<void> _fetchWalletData() async {
@@ -242,7 +296,7 @@ class _WalletPageState extends State<WalletPage> {
                 
                 if (pendingAmount > 0) ...[
                   const SizedBox(height: 16),
-                  if (hasPendingProof)
+                  if (hasPendingProof || isProcessingPayment)
                     Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
@@ -256,7 +310,9 @@ class _WalletPageState extends State<WalletPage> {
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              'Payment verification pending...',
+                              isProcessingPayment 
+                                ? 'Processing payment...'
+                                : 'Payment verification pending...',
                               style: GoogleFonts.poppins(
                                 color: Colors.white,
                                 fontSize: 12,
@@ -270,10 +326,10 @@ class _WalletPageState extends State<WalletPage> {
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton.icon(
-                        onPressed: () => _initiateUpiPayment(pendingAmount),
+                        onPressed: () => _showPaymentBottomSheet(pendingAmount),
                         icon: const Icon(Icons.payment, size: 20),
                         label: Text(
-                          'Pay ₹${pendingAmount.toStringAsFixed(2)} via UPI',
+                          'Pay ₹${pendingAmount.toStringAsFixed(2)}',
                           style: GoogleFonts.poppins(
                             fontSize: 16,
                             fontWeight: FontWeight.bold,
@@ -299,347 +355,325 @@ class _WalletPageState extends State<WalletPage> {
     );
   }
 
-  // ✅ FIXED: Proper UPI payment that triggers native app picker
-  Future<void> _initiateUpiPayment(double amount) async {
-    const upiId = '8341132728@mbk';
-    const payeeName = 'Platform Commission';
-    final amountStr = amount.toStringAsFixed(2);
-    final transactionNote = 'Commission Payment - Driver: ${widget.driverId}';
-    final transactionRef = 'TXN${DateTime.now().millisecondsSinceEpoch}';
-
-    // ✅ Proper UPI URL format that Android recognizes
-    final upiUrl = 'upi://pay?'
-        'pa=$upiId&'
-        'pn=${Uri.encodeComponent(payeeName)}&'
-        'am=$amountStr&'
-        'cu=INR&'
-        'tn=${Uri.encodeComponent(transactionNote)}&'
-        'tr=$transactionRef';
-
-    print('🔥 UPI URL: $upiUrl');
-
-    try {
-      final uri = Uri.parse(upiUrl);
-      
-      // ✅ This will trigger Android's native UPI app chooser
-      final bool launched = await launchUrl(
-        uri,
-        mode: LaunchMode.externalApplication,
-      );
-
-      if (launched) {
-        print('✅ UPI payment launched - Android will show app picker');
-        
-        // Wait for user to complete payment and return
-        await Future.delayed(const Duration(seconds: 2));
-        
-        if (mounted) {
-          // Show confirmation dialog
-          _showPaymentConfirmationDialog(amount, transactionRef);
-        }
-      } else {
-        print('⚠️ Could not launch UPI payment');
-        _showManualPaymentDialog(upiId, amount);
-      }
-    } catch (e) {
-      print('❌ Error launching UPI: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error: $e'),
-          backgroundColor: Colors.red,
+  // 🎯 NEW: Bottom Sheet with Payment Options
+  void _showPaymentBottomSheet(double amount) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (context) => Container(
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
         ),
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey[300],
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 20),
+            Text(
+              'Pay Commission',
+              style: GoogleFonts.poppins(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '₹${amount.toStringAsFixed(2)}',
+              style: GoogleFonts.poppins(
+                fontSize: 32,
+                fontWeight: FontWeight.bold,
+                color: const Color(0xFF1565C0),
+              ),
+            ),
+            const SizedBox(height: 24),
+            
+            // UPI Payment Button
+            _buildPaymentOptionButton(
+              icon: Icons.account_balance,
+              label: 'Pay with UPI',
+              subtitle: 'Google Pay, PhonePe, Paytm & more',
+              color: const Color(0xFF1565C0),
+              onTap: () {
+                Navigator.pop(context);
+                _initiateUPIPayment(amount);
+              },
+            ),
+            
+            const SizedBox(height: 12),
+            
+            // Card Payment Button
+            _buildPaymentOptionButton(
+              icon: Icons.credit_card,
+              label: 'Card / Net Banking',
+              subtitle: 'Debit Card, Credit Card, Net Banking',
+              color: Colors.purple,
+              onTap: () {
+                Navigator.pop(context);
+                _initiateCardPayment(amount);
+              },
+            ),
+            
+            const SizedBox(height: 12),
+            
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(
+                'Cancel',
+                style: GoogleFonts.poppins(
+                  color: Colors.grey[600],
+                  fontSize: 16,
+                ),
+              ),
+            ),
+            SizedBox(height: MediaQuery.of(context).padding.bottom),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPaymentOptionButton({
+    required IconData icon,
+    required String label,
+    required String subtitle,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          border: Border.all(color: Colors.grey[300]!),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(icon, color: color, size: 28),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: GoogleFonts.poppins(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    style: GoogleFonts.poppins(
+                      fontSize: 12,
+                      color: Colors.grey[600],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey[400]),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 🎯 UPI Payment (Opens Native Apps)
+  Future<void> _initiateUPIPayment(double amount) async {
+    setState(() => isProcessingPayment = true);
+    
+    try {
+      // Create order on backend
+      final response = await http.post(
+        Uri.parse('$apiBase/api/wallet/create-order'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'driverId': widget.driverId,
+          'amount': amount,
+        }),
       );
-      _showManualPaymentDialog(upiId, amount);
+
+      if (response.statusCode != 200) {
+        throw Exception('Failed to create order');
+      }
+
+      final data = jsonDecode(response.body);
+      if (!data['success']) {
+        throw Exception(data['message'] ?? 'Order creation failed');
+      }
+
+      final orderId = data['orderId'];
+      final amountInPaise = (amount * 100).toInt();
+
+      // Open Razorpay with UPI intent
+      var options = {
+        'key': 'rzp_test_RUSfmaBJxKTTMT',
+        'amount': amountInPaise,
+        'name': 'Platform Commission',
+        'order_id': orderId,
+        'description': 'Commission Payment',
+        'prefill': {
+          'contact': '9999999999',
+          'email': 'driver@example.com'
+        },
+        'method': {
+          'upi': true,
+          'card': false,
+          'netbanking': false,
+          'wallet': false
+        },
+        'theme': {
+          'color': '#1565C0'
+        }
+      };
+
+      _razorpay.open(options);
+    } catch (e) {
+      setState(() => isProcessingPayment = false);
+      print('❌ Error initiating UPI payment: $e');
+      _showSnackBar('Error: $e', isError: true);
     }
   }
 
-  // ✅ NEW: Ask if payment was completed
-  void _showPaymentConfirmationDialog(double amount, String transactionRef) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Row(
-          children: [
-            const Icon(Icons.help_outline, color: Color(0xFF1565C0)),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                'Payment Status',
-                style: GoogleFonts.poppins(fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-            ),
-          ],
-        ),
-        content: Text(
-          'Did you complete the payment of ₹${amount.toStringAsFixed(2)}?',
-          style: GoogleFonts.poppins(fontSize: 14),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Payment cancelled')),
-              );
-            },
-            child: Text('No', style: GoogleFonts.poppins(color: Colors.grey)),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _showPaymentProofDialog(amount, transactionId: transactionRef);
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-            child: Text('Yes, I Paid', style: GoogleFonts.poppins(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ✅ Show payment proof dialog
-  void _showPaymentProofDialog(
-    double amount, {
-    String? transactionId,
-  }) {
-    final TextEditingController transactionIdController = TextEditingController(
-      text: transactionId ?? '',
-    );
-    String selectedApp = 'gpay';
-    File? screenshotFile;
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: Row(
-            children: [
-              const Icon(Icons.receipt_long, color: Color(0xFF1565C0)),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  'Submit Payment Proof',
-                  style: GoogleFonts.poppins(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-              ),
-            ],
-          ),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.blue[50],
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.info_outline, color: Colors.blue[700], size: 20),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'Enter the 12-digit UPI transaction ID from your payment app',
-                          style: GoogleFonts.poppins(
-                            fontSize: 12,
-                            color: Colors.blue[700],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 16),
-                
-                Text('UPI Transaction ID *', style: GoogleFonts.poppins(fontSize: 14, fontWeight: FontWeight.w600)),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: transactionIdController,
-                  decoration: InputDecoration(
-                    hintText: 'e.g., 123456789012',
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                  textCapitalization: TextCapitalization.characters,
-                  keyboardType: TextInputType.number,
-                  maxLength: 12,
-                ),
-                const SizedBox(height: 8),
-                
-                Text('Payment App Used', style: GoogleFonts.poppins(fontSize: 14, fontWeight: FontWeight.w600)),
-                const SizedBox(height: 8),
-                DropdownButtonFormField<String>(
-                  value: selectedApp,
-                  decoration: InputDecoration(
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                  items: const [
-                    DropdownMenuItem(value: 'gpay', child: Text('Google Pay')),
-                    DropdownMenuItem(value: 'phonepe', child: Text('PhonePe')),
-                    DropdownMenuItem(value: 'paytm', child: Text('Paytm')),
-                    DropdownMenuItem(value: 'other', child: Text('Other UPI App')),
-                  ],
-                  onChanged: (value) {
-                    setDialogState(() => selectedApp = value!);
-                  },
-                ),
-                const SizedBox(height: 16),
-                
-                Text('Screenshot (Optional)', style: GoogleFonts.poppins(fontSize: 14, fontWeight: FontWeight.w600)),
-                const SizedBox(height: 8),
-                if (screenshotFile != null)
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.green[50],
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.green),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.check_circle, color: Colors.green),
-                        const SizedBox(width: 8),
-                        Expanded(child: Text('Screenshot attached', style: GoogleFonts.poppins(fontSize: 12))),
-                        IconButton(
-                          icon: const Icon(Icons.close, color: Colors.red),
-                          onPressed: () => setDialogState(() => screenshotFile = null),
-                        ),
-                      ],
-                    ),
-                  )
-                else
-                  OutlinedButton.icon(
-                    onPressed: () async {
-                      final ImagePicker picker = ImagePicker();
-                      final XFile? image = await picker.pickImage(
-                        source: ImageSource.gallery,
-                        imageQuality: 80,
-                      );
-                      if (image != null) {
-                        setDialogState(() => screenshotFile = File(image.path));
-                      }
-                    },
-                    icon: const Icon(Icons.upload_file),
-                    label: Text('Upload Screenshot', style: GoogleFonts.poppins()),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-              },
-              child: Text('Cancel', style: GoogleFonts.poppins(color: Colors.grey)),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                final txnId = transactionIdController.text.trim();
-                if (txnId.isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Please enter transaction ID')),
-                  );
-                  return;
-                }
-                
-                if (txnId.length < 8) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Transaction ID must be at least 8 characters')),
-                  );
-                  return;
-                }
-                
-                Navigator.pop(context);
-                await _submitPaymentProof(amount, txnId, selectedApp, screenshotFile);
-              },
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-              child: Text('Submit Proof', style: GoogleFonts.poppins(color: Colors.white)),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // Submit payment proof to backend
-  Future<void> _submitPaymentProof(
-    double amount,
-    String transactionId,
-    String paymentApp,
-    File? screenshot,
-  ) async {
+  // 🎯 Card/Net Banking Payment
+  Future<void> _initiateCardPayment(double amount) async {
+    setState(() => isProcessingPayment = true);
+    
     try {
-      // Show loading
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => const Center(child: CircularProgressIndicator()),
+      final response = await http.post(
+        Uri.parse('$apiBase/api/wallet/create-order'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'driverId': widget.driverId,
+          'amount': amount,
+        }),
       );
 
-      final uri = Uri.parse('$apiBase/api/wallet/submit-payment-proof');
-      final request = http.MultipartRequest('POST', uri);
-      
-      request.fields['driverId'] = widget.driverId;
-      request.fields['amount'] = amount.toString();
-      request.fields['upiTransactionId'] = transactionId;
-      request.fields['paymentApp'] = paymentApp;
-      
-      if (screenshot != null) {
-        request.files.add(await http.MultipartFile.fromPath('screenshot', screenshot.path));
+      if (response.statusCode != 200) {
+        throw Exception('Failed to create order');
       }
+
+      final data = jsonDecode(response.body);
+      if (!data['success']) {
+        throw Exception(data['message'] ?? 'Order creation failed');
+      }
+
+      final orderId = data['orderId'];
+      final amountInPaise = (amount * 100).toInt();
+
+      var options = {
+        'key': 'rzp_test_RUSfmaBJxKTTMT',
+        'amount': amountInPaise,
+        'name': 'Platform Commission',
+        'order_id': orderId,
+        'description': 'Commission Payment',
+        'prefill': {
+          'contact': '9999999999',
+          'email': 'driver@example.com'
+        },
+        'method': {
+          'card': true,
+          'netbanking': true,
+          'wallet': true,
+          'upi': false
+        },
+        'theme': {
+          'color': '#1565C0'
+        }
+      };
+
+      _razorpay.open(options);
+    } catch (e) {
+      setState(() => isProcessingPayment = false);
+      print('❌ Error initiating card payment: $e');
+      _showSnackBar('Error: $e', isError: true);
+    }
+  }
+
+  // ✅ Verify Payment with Backend
+  Future<void> _verifyPaymentWithBackend(
+    String paymentId,
+    String orderId,
+    String signature,
+  ) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$apiBase/api/wallet/verify-payment'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'driverId': widget.driverId,
+          'paymentId': paymentId,
+          'orderId': orderId,
+          'signature': signature,
+        }),
+      );
+
+      final data = jsonDecode(response.body);
       
-      final response = await request.send();
-      final responseData = await response.stream.bytesToString();
-      final data = jsonDecode(responseData);
-      
-      // Close loading dialog
-      Navigator.pop(context);
+      setState(() => isProcessingPayment = false);
       
       if (response.statusCode == 200 && data['success']) {
         await _fetchWalletData();
         await _fetchPaymentProofs();
         
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                const Icon(Icons.check_circle, color: Colors.white),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'Payment proof submitted successfully!\nVerification will be completed within 24 hours.',
-                    style: GoogleFonts.poppins(fontSize: 13),
-                  ),
-                ),
-              ],
-            ),
-            backgroundColor: Colors.green,
-            duration: const Duration(seconds: 4),
-          ),
+        _showSnackBar(
+          'Payment successful! Commission cleared.',
+          isError: false,
+          icon: Icons.check_circle,
         );
       } else {
-        throw Exception(data['message'] ?? 'Submission failed');
+        throw Exception(data['message'] ?? 'Payment verification failed');
       }
     } catch (e) {
-      // Close loading dialog if still open
-      if (Navigator.canPop(context)) Navigator.pop(context);
-      
-      print('❌ Error: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      setState(() => isProcessingPayment = false);
+      print('❌ Verification Error: $e');
+      _showSnackBar('Verification failed: $e', isError: true);
     }
+  }
+
+  void _showSnackBar(String message, {bool isError = false, IconData? icon, Color? backgroundColor}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(
+              icon ?? (isError ? Icons.error : Icons.info),
+              color: Colors.white,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                message,
+                style: GoogleFonts.poppins(fontSize: 13),
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: backgroundColor ?? (isError ? Colors.red : Colors.green),
+        duration: const Duration(seconds: 4),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   Widget _buildPendingPaymentsSection() {
@@ -658,7 +692,7 @@ class _WalletPageState extends State<WalletPage> {
         const SizedBox(height: 12),
         ...pending.map((proof) {
           final amount = proof['amount'] ?? 0.0;
-          final transactionId = proof['upiTransactionId'] ?? '';
+          final transactionId = proof['razorpayPaymentId'] ?? proof['upiTransactionId'] ?? '';
           final submittedAt = DateTime.parse(proof['submittedAt']);
           
           return Container(
@@ -726,92 +760,6 @@ class _WalletPageState extends State<WalletPage> {
           );
         }).toList(),
       ],
-    );
-  }
-
-  void _showManualPaymentDialog(String upiId, double amount) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Row(
-          children: [
-            const Icon(Icons.qr_code, color: Colors.blue),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text('Pay Manually', style: GoogleFonts.poppins(fontSize: 18)),
-            ),
-          ],
-        ),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Pay using any UPI app:', style: GoogleFonts.poppins()),
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.grey[100],
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text('UPI ID:', style: GoogleFonts.poppins(fontSize: 12, color: Colors.grey[600])),
-                              const SizedBox(height: 4),
-                              Text(upiId, style: GoogleFonts.poppins(fontWeight: FontWeight.bold, fontSize: 14)),
-                            ],
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.copy, size: 20, color: Colors.blue),
-                          onPressed: () {
-                            Clipboard.setData(ClipboardData(text: upiId));
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('UPI ID copied to clipboard!')),
-                            );
-                          },
-                        ),
-                      ],
-                    ),
-                    const Divider(height: 24),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text('Amount:', style: GoogleFonts.poppins(fontSize: 14)),
-                        Text('₹${amount.toStringAsFixed(2)}', 
-                          style: GoogleFonts.poppins(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.green)),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Cancel', style: GoogleFonts.poppins(color: Colors.grey)),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _showPaymentProofDialog(amount);
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
-            child: Text('I Paid', style: GoogleFonts.poppins(color: Colors.white)),
-          ),
-        ],
-      ),
     );
   }
 
