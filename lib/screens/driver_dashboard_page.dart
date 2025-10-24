@@ -18,6 +18,7 @@ import '../screens/chat_page.dart';
 import 'wallet_page.dart';
 import 'package:flutter/services.dart'; // ✅ ADD THIS LINE
 import 'package:flutter/foundation.dart'; // ✅ ADD THIS for kDebugMode
+import 'driver_profile_page.dart'; // ✅ Add this
 
 // ✅ ADD YOUR THEME CLASSES HERE
 class AppColors {
@@ -96,7 +97,7 @@ class DriverDashboardPage extends StatefulWidget {
 }
 
 class _DriverDashboardPageState extends State<DriverDashboardPage> with WidgetsBindingObserver {
-  final String apiBase = 'https://e4784d33af60.ngrok-free.app';
+  final String apiBase = 'https://7668d252ef1d.ngrok-free.app';
   final DriverSocketService _socketService = DriverSocketService();
   String ridePhase = 'none';
   String? customerOtp;
@@ -2907,19 +2908,19 @@ void _showManualPaymentDialog(String upiId, double amount) {
   }
 
   void _openChat(Map<String, dynamic> customer, Map<String, dynamic> trip) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => ChatPage(
-          tripId: activeTripDetails!['tripId'],
-          senderId: widget.driverId,
-          receiverId: customer['id'],
-          receiverName: customer['name'] ?? 'Customer',
-        ),
+  Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (context) => ChatPage(
+        tripId: activeTripDetails!['tripId'],
+        senderId: widget.driverId,
+        receiverId: customer['id'],
+        receiverName: customer['name'] ?? 'Customer',
+        isDriver: true, // ✅ DRIVER SIDE
       ),
-    );
-  }
-
+    ),
+  );
+}
   Widget _buildCircleButton(IconData icon, VoidCallback onPressed) {
     return CircleAvatar(
       backgroundColor: AppColors.surface,
@@ -3016,45 +3017,52 @@ void _showManualPaymentDialog(String upiId, double amount) {
         padding: EdgeInsets.zero,
         children: [
           DrawerHeader(
-            decoration: BoxDecoration(
-              color: AppColors.primary,
-            ),
-            child: Row(
-              children: [
-                const CircleAvatar(
-                  backgroundImage: AssetImage('assets/profile.jpg'),
-                  radius: 30,
-                ),
-                const SizedBox(width: 10),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      "My Profile",
-                      style: AppTextStyles.heading3.copyWith(color: AppColors.onPrimary),
-                    ),
-                    Text(
-                      "-- ⭐",
-                      style: AppTextStyles.body2.copyWith(color: AppColors.onPrimary),
-                    ),
-                  ],
-                ),
-                const Spacer(),
-                OutlinedButton(
-                  onPressed: () {},
-                  style: OutlinedButton.styleFrom(
-                    side: BorderSide(color: AppColors.onPrimary),
-                    shape: const StadiumBorder(),
-                  ),
-                  child: Text(
-                    "Best",
-                    style: AppTextStyles.button.copyWith(color: AppColors.onPrimary, fontSize: 12),
-                  ),
-                ),
-              ],
-            ),
+  decoration: BoxDecoration(
+    color: AppColors.primary,
+  ),
+  child: InkWell(
+    onTap: () {
+      // ✅ Navigate to profile page
+      Navigator.pop(context); // Close drawer first
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => DriverProfilePage(driverId: driverId),
+        ),
+      );
+    },
+    child: Row(
+      children: [
+        const CircleAvatar(
+          backgroundImage: AssetImage('assets/profile.jpg'),
+          radius: 30,
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                "My Profile",
+                style: AppTextStyles.heading3.copyWith(color: AppColors.onPrimary),
+              ),
+              Text(
+                "Tap to view details",
+                style: AppTextStyles.caption.copyWith(color: AppColors.onPrimary.withOpacity(0.8)),
+              ),
+            ],
           ),
+        ),
+        Icon(
+          Icons.arrow_forward_ios,
+          color: AppColors.onPrimary,
+          size: 16,
+        ),
+      ],
+    ),
+  ),
+),
           
           buildDrawerItem(
             Icons.account_balance_wallet,

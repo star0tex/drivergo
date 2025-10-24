@@ -7,6 +7,71 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:google_fonts/google_fonts.dart';
+
+// --- MATCHING COLOR PALETTE ---
+class AppColors {
+  static const Color primary = Color.fromARGB(255, 212, 120, 0);
+  static const Color background = Colors.white;
+  static const Color onSurface = Colors.black;
+  static const Color surface = Color(0xFFF5F5F5);
+  static const Color onPrimary = Colors.white;
+  static const Color onSurfaceSecondary = Colors.black54;
+  static const Color onSurfaceTertiary = Colors.black38;
+  static const Color divider = Color(0xFFEEEEEE);
+  static const Color success = Color.fromARGB(255, 0, 66, 3);
+  static const Color warning = Color(0xFFFFA000);
+  static const Color error = Color(0xFFD32F2F);
+  static const Color serviceCardBg = Color.fromARGB(255, 238, 216, 189);
+}
+
+// --- MATCHING TYPOGRAPHY ---
+class AppTextStyles {
+  static TextStyle get heading1 => GoogleFonts.plusJakartaSans(
+        fontSize: 32,
+        fontWeight: FontWeight.w800,
+        color: AppColors.onSurface,
+        letterSpacing: -0.5,
+      );
+
+  static TextStyle get heading2 => GoogleFonts.plusJakartaSans(
+        fontSize: 24,
+        fontWeight: FontWeight.w700,
+        color: AppColors.onSurface,
+        letterSpacing: -0.3,
+      );
+
+  static TextStyle get heading3 => GoogleFonts.plusJakartaSans(
+        fontSize: 18,
+        fontWeight: FontWeight.w600,
+        color: AppColors.onSurface,
+      );
+
+  static TextStyle get body1 => GoogleFonts.plusJakartaSans(
+        fontSize: 16,
+        fontWeight: FontWeight.w500,
+        color: AppColors.onSurface,
+      );
+
+  static TextStyle get body2 => GoogleFonts.plusJakartaSans(
+        fontSize: 14,
+        fontWeight: FontWeight.w500,
+        color: AppColors.onSurfaceSecondary,
+      );
+
+  static TextStyle get caption => GoogleFonts.plusJakartaSans(
+        fontSize: 12,
+        fontWeight: FontWeight.w500,
+        color: AppColors.onSurfaceTertiary,
+        letterSpacing: 0.5,
+      );
+
+  static TextStyle get button => GoogleFonts.plusJakartaSans(
+        fontSize: 16,
+        fontWeight: FontWeight.w700,
+        color: AppColors.onPrimary,
+      );
+}
 
 class DriverLoginPage extends StatefulWidget {
   const DriverLoginPage({super.key});
@@ -24,7 +89,7 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
   bool _isLoading = false;
   bool _isCheckingSession = true;
 
-  final String backendUrl = "https://e4784d33af60.ngrok-free.app";
+  final String backendUrl = "https://7668d252ef1d.ngrok-free.app";
 
   @override
   void initState() {
@@ -32,7 +97,6 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
     _checkExistingSession();
   }
 
-  /// ✅ CHECK IF USER IS ALREADY LOGGED IN (WITHOUT BACKEND VERIFICATION)
   Future<void> _checkExistingSession() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -41,28 +105,25 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
       final isLoggedIn = prefs.getBool("isLoggedIn") ?? false;
       final phoneNumber = prefs.getString("phoneNumber") ?? '';
 
-      print("🔍 Checking existing session...");
-      print("   Driver ID: $driverId");
-      print("   Phone: $phoneNumber");
-      print("   Vehicle Type: '$vehicleType'");
-      print("   Is Logged In: $isLoggedIn");
+      debugPrint("🔍 Checking existing session...");
+      debugPrint("   Driver ID: $driverId");
+      debugPrint("   Phone: $phoneNumber");
+      debugPrint("   Vehicle Type: '$vehicleType'");
+      debugPrint("   Is Logged In: $isLoggedIn");
 
-      // ✅ Simply check if we have the required data
       if (isLoggedIn && 
           driverId != null && 
           driverId.isNotEmpty && 
           phoneNumber.isNotEmpty) {
         
-        print("✅ Valid local session found - auto-navigating");
+        debugPrint("✅ Valid local session found - auto-navigating");
         
-        // Small delay to prevent instant navigation (better UX)
         await Future.delayed(const Duration(milliseconds: 500));
         
         if (!mounted) return;
         
-        // Navigate to appropriate screen based on stored data
         if (vehicleType.isNotEmpty) {
-          print("🚗 Navigating to dashboard with vehicle: '$vehicleType'");
+          debugPrint("🚗 Navigating to dashboard with vehicle: '$vehicleType'");
           Navigator.pushReplacement(
             context,
             MaterialPageRoute(
@@ -73,7 +134,7 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
             ),
           );
         } else {
-          print("📄 No vehicle type - navigating to document upload");
+          debugPrint("📄 No vehicle type - navigating to document upload");
           Navigator.pushReplacement(
             context,
             MaterialPageRoute(
@@ -83,10 +144,10 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
         }
         return;
       } else {
-        print("❌ No valid session found - showing login screen");
+        debugPrint("❌ No valid session found - showing login screen");
       }
     } catch (e) {
-      print("⚠️ Error checking session: $e");
+      debugPrint("⚠️ Error checking session: $e");
     } finally {
       if (mounted) {
         setState(() => _isCheckingSession = false);
@@ -94,16 +155,14 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
     }
   }
 
-  /// ✅ CLEAR SESSION DATA
   Future<void> _clearSession() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.clear(); // Clear everything
+    await prefs.clear();
     
-    // Sign out from Firebase
     try {
       await FirebaseAuth.instance.signOut();
     } catch (e) {
-      print("⚠️ Firebase sign-out error: $e");
+      debugPrint("⚠️ Firebase sign-out error: $e");
     }
   }
 
@@ -182,15 +241,9 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         
-        print("═══════════════════════════════════════════");
-        print("📋 FULL LOGIN RESPONSE:");
-        print(jsonEncode(data));
-        print("═══════════════════════════════════════════");
-        
         if (data["firebaseToken"] != null) {
           try {
             await FirebaseAuth.instance.signInWithCustomToken(data["firebaseToken"]);
-            print("✅ Firebase sign-in successful");
           } catch (e) {
             debugPrint("❌ Firebase sign-in failed: $e");
           }
@@ -200,54 +253,22 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
         final isNewUser = data["newUser"] == true;
         final docsApproved = data["docsApproved"] == true;
         
-        print("═══════════════════════════════════════════");
-        print("📋 EXTRACTING USER DATA:");
-        print("   Raw user object: ${data["user"]}");
-        print("   user['vehicleType']: ${data["user"]["vehicleType"]}");
-        print("   Type of vehicleType: ${data["user"]["vehicleType"]?.runtimeType}");
-        print("═══════════════════════════════════════════");
-        
         String vehicleType = '';
         
         if (data["user"]["vehicleType"] != null) {
           vehicleType = data["user"]["vehicleType"].toString().toLowerCase().trim();
-          print("✅ Vehicle type extracted: '$vehicleType'");
-        } else {
-          print("⚠️ WARNING: vehicleType is NULL in response!");
         }
-        
-        print("═══════════════════════════════════════════");
-        print("📋 FINAL DRIVER DETAILS:");
-        print("   Driver ID: $driverId");
-        print("   Vehicle Type: '$vehicleType'");
-        print("   Vehicle Type Length: ${vehicleType.length}");
-        print("   Is Empty: ${vehicleType.isEmpty}");
-        print("   Is New User: $isNewUser");
-        print("   Docs Approved: $docsApproved");
-        print("═══════════════════════════════════════════");
 
-        // ✅ SAVE SESSION DATA PERSISTENTLY
         final prefs = await SharedPreferences.getInstance();
         
-        // Save all required data
         await prefs.setString("driverId", driverId);
         await prefs.setString("phoneNumber", rawPhone);
         await prefs.setString("vehicleType", vehicleType);
         await prefs.setBool("isLoggedIn", true);
         await prefs.setInt("loginTimestamp", DateTime.now().millisecondsSinceEpoch);
-        
-        // Also save the login response for reference
         await prefs.setString("lastLoginResponse", jsonEncode(data));
-        
-        // Verify the data was saved
-        final savedDriverId = prefs.getString("driverId");
-        final savedIsLoggedIn = prefs.getBool("isLoggedIn");
-        print("✅ Verification - Saved Driver ID: $savedDriverId");
-        print("✅ Verification - Saved isLoggedIn: $savedIsLoggedIn");
-        print("✅ Driver session saved successfully.");
 
         if (isNewUser) {
-          print("🆕 New user - navigating to document upload");
           Navigator.pushReplacement(
             context,
             MaterialPageRoute(
@@ -256,7 +277,6 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
           );
         } else if (docsApproved) {
           if (vehicleType.isEmpty) {
-            print("⚠️ CRITICAL: Vehicle type is EMPTY for approved driver!");
             _showMessage(
               "Please complete your vehicle registration first.",
               isError: true,
@@ -270,7 +290,6 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
             return;
           }
           
-          print("🚗 Navigating to dashboard with vehicle type: '$vehicleType'");
           Navigator.pushReplacement(
             context,
             MaterialPageRoute(
@@ -281,7 +300,6 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
             ),
           );
         } else {
-          print("📄 Existing user with pending docs - navigating to review page");
           Navigator.pushReplacement(
             context,
             MaterialPageRoute(
@@ -291,7 +309,6 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
         }
       } else {
         final errorData = jsonDecode(response.body);
-        print("❌ Login failed: ${errorData['message']}");
         _showMessage(
           errorData['message'] ?? "Login failed. Invalid OTP?",
           isError: true,
@@ -300,7 +317,6 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
     } catch (e) {
       if (mounted) Navigator.pop(context);
       setState(() => _isLoading = false);
-      print("❌ Exception during login: $e");
       _showMessage("An error occurred: ${e.toString()}", isError: true);
     }
   }
@@ -315,15 +331,20 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
       context: context,
       barrierDismissible: false,
       builder: (_) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        child: const Padding(
-          padding: EdgeInsets.all(24),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        backgroundColor: AppColors.background,
+        child: Padding(
+          padding: const EdgeInsets.all(24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              CircularProgressIndicator(),
-              SizedBox(height: 16),
-              Text("Verifying...", style: TextStyle(fontSize: 16)),
+              const CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary),
+              ),
+              const SizedBox(height: 16),
+              Text("Verifying...", style: AppTextStyles.body1),
+              const SizedBox(height: 8),
+              Text("Please wait", style: AppTextStyles.caption),
             ],
           ),
         ),
@@ -335,29 +356,55 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(message, textAlign: TextAlign.center),
-        backgroundColor: isError ? Colors.red[600] : Colors.green[600],
+        content: Row(
+          children: [
+            Icon(
+              isError ? Icons.error : Icons.check_circle,
+              color: AppColors.onPrimary,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                message,
+                style: AppTextStyles.body1.copyWith(color: AppColors.onPrimary),
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: isError ? AppColors.error : AppColors.success,
         behavior: SnackBarBehavior.floating,
         duration: const Duration(seconds: 3),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    // Show loading spinner while checking session
     if (_isCheckingSession) {
-      return const Scaffold(
-        backgroundColor: Color(0xFFF0F4FF),
+      return Scaffold(
+        backgroundColor: AppColors.background,
         body: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              CircularProgressIndicator(),
-              SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withOpacity(0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: const CircularProgressIndicator(
+                  valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary),
+                  strokeWidth: 3,
+                ),
+              ),
+              const SizedBox(height: 24),
               Text(
                 'Checking session...',
-                style: TextStyle(fontSize: 16, color: Colors.grey),
+                style: AppTextStyles.body1,
               ),
             ],
           ),
@@ -366,120 +413,299 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
     }
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF0F4FF),
+      backgroundColor: AppColors.background,
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 48),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // Logo/Icon
+              Center(
+                child: Container(
+                  padding: const EdgeInsets.all(24),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withOpacity(0.1),
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: AppColors.primary.withOpacity(0.3),
+                      width: 2,
+                    ),
+                  ),
+                  child: Icon(
+                    Icons.local_taxi,
+                    size: 64,
+                    color: AppColors.primary,
+                  ),
+                ),
+              ),
+              
+              const SizedBox(height: 32),
+              
+              // Title
+              Center(
+                child: Text(
+                  'Driver Login',
+                  style: AppTextStyles.heading1.copyWith(fontSize: 28),
+                ),
+              ),
+              
+              const SizedBox(height: 8),
+              
+              Center(
+                child: Text(
+                  'Welcome back! Please login to continue',
+                  style: AppTextStyles.body2,
+                  textAlign: TextAlign.center,
+                ),
+              ),
+              
+              const SizedBox(height: 48),
+              
+              // Phone Number Input
               Text(
-                'Driver Login',
-                style: TextStyle(
-                  fontSize: 26,
-                  fontFamily: 'Montserrat',
-                  fontWeight: FontWeight.bold,
-                  color: Colors.blue[900],
-                ),
+                'Mobile Number',
+                style: AppTextStyles.heading3.copyWith(fontSize: 16),
               ),
-              const SizedBox(height: 40),
-              const Text('Enter your mobile number', style: TextStyle(fontSize: 18)),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _phoneController,
-                keyboardType: TextInputType.phone,
-                maxLength: 10,
-                enabled: !_codeSent && !_isLoading,
-                inputFormatters: [
-                  FilteringTextInputFormatter.digitsOnly,
-                  LengthLimitingTextInputFormatter(10),
-                ],
-                decoration: InputDecoration(
-                  prefixText: '+91 ',
-                  hintText: '0000000000',
-                  filled: true,
-                  fillColor: Colors.white,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: Colors.grey.shade300),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: Colors.grey.shade300),
-                  ),
-                  counterText: '',
+              const SizedBox(height: 12),
+              
+              Container(
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: AppColors.divider),
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppColors.onSurface.withOpacity(0.05),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
                 ),
-              ),
-              const SizedBox(height: 20),
-              if (_codeSent) ...[
-                const Text('Enter OTP', style: TextStyle(fontSize: 18)),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: _otpController,
-                  focusNode: _otpFocus,
-                  keyboardType: TextInputType.number,
-                  maxLength: 6,
-                  enabled: !_isLoading,
+                child: TextField(
+                  controller: _phoneController,
+                  keyboardType: TextInputType.phone,
+                  maxLength: 10,
+                  enabled: !_codeSent && !_isLoading,
+                  style: AppTextStyles.body1,
                   inputFormatters: [
-                    LengthLimitingTextInputFormatter(6),
                     FilteringTextInputFormatter.digitsOnly,
+                    LengthLimitingTextInputFormatter(10),
                   ],
                   decoration: InputDecoration(
-                    hintText: '6-digit OTP',
-                    filled: true,
-                    fillColor: Colors.white,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide(color: Colors.grey.shade300),
+                    prefixIcon: Container(
+                      margin: const EdgeInsets.all(12),
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Icon(
+                        Icons.phone,
+                        color: AppColors.primary,
+                        size: 20,
+                      ),
                     ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide(color: Colors.grey.shade300),
+                    prefixText: '+91 ',
+                    prefixStyle: AppTextStyles.body1.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                    hintText: '9876543210',
+                    hintStyle: AppTextStyles.body2,
+                    border: InputBorder.none,
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 20,
+                      vertical: 18,
                     ),
                     counterText: '',
                   ),
-                  onSubmitted: (_) => _verifyOTPAndLogin(),
                 ),
-                const SizedBox(height: 10),
+              ),
+              
+              const SizedBox(height: 24),
+              
+              // OTP Input (conditional)
+              if (_codeSent) ...[
+                Text(
+                  'Enter OTP',
+                  style: AppTextStyles.heading3.copyWith(fontSize: 16),
+                ),
+                const SizedBox(height: 12),
+                
+                Container(
+                  decoration: BoxDecoration(
+                    color: AppColors.surface,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: AppColors.divider),
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.onSurface.withOpacity(0.05),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: TextField(
+                    controller: _otpController,
+                    focusNode: _otpFocus,
+                    keyboardType: TextInputType.number,
+                    maxLength: 6,
+                    enabled: !_isLoading,
+                    style: AppTextStyles.body1.copyWith(
+                      letterSpacing: 8,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    inputFormatters: [
+                      LengthLimitingTextInputFormatter(6),
+                      FilteringTextInputFormatter.digitsOnly,
+                    ],
+                    decoration: InputDecoration(
+                      prefixIcon: Container(
+                        margin: const EdgeInsets.all(12),
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: AppColors.primary.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Icon(
+                          Icons.lock,
+                          color: AppColors.primary,
+                          size: 20,
+                        ),
+                      ),
+                      hintText: '000000',
+                      hintStyle: AppTextStyles.body2.copyWith(
+                        letterSpacing: 8,
+                      ),
+                      border: InputBorder.none,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 18,
+                      ),
+                      counterText: '',
+                    ),
+                    onSubmitted: (_) => _verifyOTPAndLogin(),
+                  ),
+                ),
+                
+                const SizedBox(height: 16),
+                
+                // Action buttons
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    TextButton(
+                    TextButton.icon(
                       onPressed: _isLoading
                           ? null
                           : () => setState(() => _codeSent = false),
-                      child: const Text('Change Number'),
+                      icon: const Icon(Icons.edit, size: 18),
+                      label: Text(
+                        'Change Number',
+                        style: AppTextStyles.body2.copyWith(
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      style: TextButton.styleFrom(
+                        foregroundColor: AppColors.primary,
+                      ),
                     ),
-                    TextButton(
+                    TextButton.icon(
                       onPressed: _isLoading ? null : _resendOTP,
-                      child: const Text('Resend OTP'),
+                      icon: const Icon(Icons.refresh, size: 18),
+                      label: Text(
+                        'Resend OTP',
+                        style: AppTextStyles.body2.copyWith(
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      style: TextButton.styleFrom(
+                        foregroundColor: AppColors.primary,
+                      ),
                     ),
                   ],
                 ),
+                
+                const SizedBox(height: 8),
               ],
-              const SizedBox(height: 20),
+              
+              const SizedBox(height: 32),
+              
+              // Main Action Button
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF1565C0),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: AppColors.onPrimary,
+                    padding: const EdgeInsets.symmetric(vertical: 18),
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(16),
                     ),
+                    elevation: 3,
+                    shadowColor: AppColors.primary.withOpacity(0.3),
                   ),
-                  onPressed: _isLoading ? null : (_codeSent ? _verifyOTPAndLogin : _sendOTP),
+                  onPressed: _isLoading 
+                      ? null 
+                      : (_codeSent ? _verifyOTPAndLogin : _sendOTP),
                   child: _isLoading
                       ? const SizedBox(
                           height: 20,
                           width: 20,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              AppColors.onPrimary,
+                            ),
                           ),
                         )
-                      : Text(_codeSent ? 'Verify & Login' : 'Send OTP'),
+                      : Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              _codeSent ? Icons.verified_user : Icons.send,
+                              size: 20,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              _codeSent ? 'Verify & Login' : 'Send OTP',
+                              style: AppTextStyles.button,
+                            ),
+                          ],
+                        ),
+                ),
+              ),
+              
+              const SizedBox(height: 32),
+              
+              // Info box
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withOpacity(0.05),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: AppColors.primary.withOpacity(0.2),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.info_outline,
+                      color: AppColors.primary,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'Enter your registered mobile number to receive OTP',
+                        style: AppTextStyles.caption.copyWith(
+                          color: AppColors.primary,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],

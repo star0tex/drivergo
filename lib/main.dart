@@ -6,7 +6,7 @@ import 'dart:io';
 import 'package:drivergoo/services/background_service.dart';
 
 import 'firebase_options.dart'; // ✅ This must be here!
-import 'package:drivergoo/screens/driver_login_page.dart';
+import 'package:drivergoo/screens/splash_screen.dart';
 Future<void> requestBatteryOptimizationExemption() async {
   if (Platform.isAndroid) {
     await Permission.ignoreBatteryOptimizations.request();
@@ -41,7 +41,7 @@ class IndianRideDriverApp extends StatelessWidget {
         scaffoldBackgroundColor: const Color(0xFFF5F7FA),
         visualDensity: VisualDensity.adaptivePlatformDensity,
       ),
-      home: const DriverLoginPage(),
+      home: const SplashScreen(),
     );
   }
 }
