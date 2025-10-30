@@ -105,7 +105,7 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
   final _formKey = GlobalKey<FormState>();
   bool _detailsSaved = false;
 
-  final String backendUrl = "https://7668d252ef1d.ngrok-free.app";
+  final String backendUrl = "https://b23b44ae0c5e.ngrok-free.app";
 
   final Map<String, String> docTypeMapping = {
     'license': 'license',

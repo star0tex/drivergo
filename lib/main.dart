@@ -4,6 +4,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'dart:io';
 import 'package:drivergoo/services/background_service.dart';
+import '../services/socket_service.dart';
 
 import 'firebase_options.dart'; // ✅ This must be here!
 import 'package:drivergoo/screens/splash_screen.dart';
@@ -15,10 +16,9 @@ Future<void> requestBatteryOptimizationExemption() async {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform, // ✅ Required!
-  );
+  await Firebase.initializeApp();
+  
+  // ✅ Correct: Connect to the socket BEFORE running the app.
 
   await FirebaseMessaging.instance.requestPermission();
  await TripBackgroundService.initializeService();

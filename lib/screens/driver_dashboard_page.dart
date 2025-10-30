@@ -4,6 +4,7 @@ import 'dart:async';
 import '../services/background_service.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -19,7 +20,7 @@ import 'wallet_page.dart';
 import 'package:flutter/services.dart'; // ✅ ADD THIS LINE
 import 'package:flutter/foundation.dart'; // ✅ ADD THIS for kDebugMode
 import 'driver_profile_page.dart'; // ✅ Add this
-
+import 'driver_ride_history_page.dart'; // ✅ ADD THIS
 // ✅ ADD YOUR THEME CLASSES HERE
 class AppColors {
   static const Color primary = Color.fromARGB(255, 212, 120, 0);
@@ -97,7 +98,7 @@ class DriverDashboardPage extends StatefulWidget {
 }
 
 class _DriverDashboardPageState extends State<DriverDashboardPage> with WidgetsBindingObserver {
-  final String apiBase = 'https://7668d252ef1d.ngrok-free.app';
+  final String apiBase = 'https://b23b44ae0c5e.ngrok-free.app';
   final DriverSocketService _socketService = DriverSocketService();
   String ridePhase = 'none';
   String? customerOtp;
@@ -2959,7 +2960,81 @@ void _showManualPaymentDialog(String upiId, double amount) {
       children: [
         buildEarningsCard(),
         const SizedBox(height: 16),
-              buildWalletCard(), // ✅ CHANGED FROM buildPerformanceCard()
+              buildWalletCard(), 
+               const SizedBox(height: 16),
+      GestureDetector(
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => DriverRideHistoryPage(driverId: driverId),
+            ),
+          );
+        },
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                AppColors.success,
+                AppColors.success.withOpacity(0.8),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                color: AppColors.success.withOpacity(0.3),
+                blurRadius: 12,
+                offset: const Offset(0, 6),
+              ),
+            ],
+          ),
+          padding: const EdgeInsets.all(20),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppColors.onPrimary.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.history,
+                  color: AppColors.onPrimary,
+                  size: 28,
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Ride History',
+                      style: AppTextStyles.heading3.copyWith(
+                        color: AppColors.onPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'View all completed rides',
+                      style: AppTextStyles.body2.copyWith(
+                        color: AppColors.onPrimary.withOpacity(0.9),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(
+                Icons.arrow_forward_ios,
+                color: AppColors.onPrimary,
+                size: 20,
+              ),
+            ],
+          ),
+        ),
+      ),// ✅ CHANGED FROM buildPerformanceCard()
 
         const SizedBox(height: 30),
         Image.asset('assets/images/mobile.png', height: 140),
@@ -3079,7 +3154,22 @@ void _showManualPaymentDialog(String upiId, double amount) {
               );
             },
           ),
-          
+                  buildDrawerItem(
+          Icons.history,
+          "Ride History",
+          "View completed rides & earnings",
+          iconColor: AppColors.success,
+          onTap: () {
+            Navigator.pop(context);
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => DriverRideHistoryPage(driverId: driverId),
+              ),
+            );
+          },
+        ),
+
           buildDrawerItem(
             Icons.attach_money,
             "Incentives and More",

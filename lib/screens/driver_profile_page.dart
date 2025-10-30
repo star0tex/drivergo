@@ -77,7 +77,7 @@ class DriverProfilePage extends StatefulWidget {
 }
 
 class _DriverProfilePageState extends State<DriverProfilePage> {
-  final String backendUrl = "https://7668d252ef1d.ngrok-free.app";
+  final String backendUrl = "https://b23b44ae0c5e.ngrok-free.app";
   
   bool isLoading = true;
   Map<String, dynamic>? driverData;

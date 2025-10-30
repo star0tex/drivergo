@@ -26,7 +26,7 @@ class SplashScreen extends StatefulWidget {
 }
 
 class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderStateMixin {
-  final String backendUrl = "https://7668d252ef1d.ngrok-free.app";
+  final String backendUrl = "https://b23b44ae0c5e.ngrok-free.app";
   
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
