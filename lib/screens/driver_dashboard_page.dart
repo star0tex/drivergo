@@ -4,7 +4,6 @@ import 'dart:async';
 import '../services/background_service.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -2221,8 +2220,7 @@ void dispose() {
           else
             buildOffDutyUI(),
 
-          if (activeTripDetails == null && isOnline)
-             buildRideRequestCard(),
+         
         ],
       ),
     );
@@ -2421,111 +2419,6 @@ void dispose() {
     }
   }
 
-  Widget buildRideRequestCard() {
-    if (currentRide == null) return const SizedBox();
-
-    final fare = currentRide!['fare'];
-    final fareAmount = fare != null ? _parseDouble(fare) : null;
-
-    return Align(
-      alignment: Alignment.bottomCenter,
-      child: Card(
-        margin: const EdgeInsets.all(16),
-        elevation: 6,
-        color: AppColors.background,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(Icons.local_taxi, color: AppColors.primary),
-                  const SizedBox(width: 8),
-                  Text("New Ride Request", style: AppTextStyles.heading3),
-                  const Spacer(),
-                  if (rideRequests.isNotEmpty)
-                    CircleAvatar(
-                      radius: 12,
-                      backgroundColor: AppColors.error,
-                      child: Text(
-                        "${rideRequests.length}",
-                        style: AppTextStyles.caption.copyWith(
-                          color: AppColors.onPrimary,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Text(
-                "Pickup: ${currentRide!['pickup']['address'] ?? ''}",
-                style: AppTextStyles.body1,
-              ),
-              Text(
-                "Drop: ${currentRide!['drop']['address'] ?? ''}",
-                style: AppTextStyles.body1,
-              ),
-              const SizedBox(height: 12),
-              if (fareAmount != null)
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-                  decoration: BoxDecoration(
-                    color: AppColors.success.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: AppColors.success),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text("Trip Fare:", style: AppTextStyles.body1),
-                      Text(
-                        "₹${fareAmount.toStringAsFixed(2)}",
-                        style: AppTextStyles.heading3.copyWith(color: AppColors.success),
-                      ),
-                    ],
-                  ),
-                ),
-              const SizedBox(height: 16),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.error,
-                      foregroundColor: AppColors.onPrimary,
-                      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                    onPressed: rejectRide,
-                    child: Text("Reject", style: AppTextStyles.button.copyWith(color: AppColors.onPrimary)),
-                  ),
-                  ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.primary,
-                      foregroundColor: AppColors.onPrimary,
-                      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                    onPressed: acceptRide,
-                    child: Text("Accept", style: AppTextStyles.button.copyWith(color: AppColors.onPrimary)),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 
   Widget buildActiveTripUI(Map<String, dynamic> tripData) {
     return Stack(
